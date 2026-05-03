@@ -1,161 +1,151 @@
-import gradio as gr
+import streamlit as st
 import cv2
+import numpy as np
 import tempfile
+import time
 from ultralytics import YOLOv10
+import torch
 
+# 1. CẤU HÌNH BAN ĐẦU & GIAO DIỆN WEB
+st.set_page_config(
+    page_title="Hệ thống Nhận diện Phương tiện", 
+    layout="wide",
+    initial_sidebar_state="expanded"
+)
 
-def yolov10_inference(image, video, model_id, image_size, conf_threshold):
-    model = YOLOv10.from_pretrained(f'jameslahm/{model_id}')
-    if image:
-        results = model.predict(source=image, imgsz=image_size, conf=conf_threshold)
-        annotated_image = results[0].plot()
-        return annotated_image[:, :, ::-1], None
-    else:
-        video_path = tempfile.mktemp(suffix=".webm")
-        with open(video_path, "wb") as f:
-            with open(video, "rb") as g:
-                f.write(g.read())
+st.title("Ứng dụng Nhận diện & Theo dõi Phương tiện Giao thông")
+st.markdown("---")
 
-        cap = cv2.VideoCapture(video_path)
-        fps = cap.get(cv2.CAP_PROP_FPS)
-        frame_width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-        frame_height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+# Đường dẫn file best.pt
+MODEL_PATH = r"D:\UIT\Do_An1_2_KLTN\test\yolov10\YOLOv10_Traffic_Full\Kaggle_Full_Train_V2\weights\best.pt"
 
-        output_video_path = tempfile.mktemp(suffix=".webm")
-        out = cv2.VideoWriter(output_video_path, cv2.VideoWriter_fourcc(*'vp80'), fps, (frame_width, frame_height))
+# class id phương tiện
+CLASS_NAMES = {0: "Motobike", 1: "Car", 2: "Bus", 3: "Truck"}
 
+# 2. LOAD MÔ HÌNH VÀO CACHE
+@st.cache_resource
+def load_yolo_model(model_path):
+    """
+    Nạp mô hình YOLOv10 vào bộ nhớ đệm của Streamlit.
+    """
+    return YOLOv10(model_path)
+
+try:
+    model = load_yolo_model(MODEL_PATH)
+    device = 0 if torch.cuda.is_available() else "cpu"
+except Exception as e:
+    st.error(f"Không thể load mô hình từ đường dẫn: {MODEL_PATH}. Hãy kiểm tra lại file của bạn.")
+    st.stop()
+
+# 3. SIDEBAR: ĐIỀU CHỈNH SIÊU THAM SỐ SUY LUẬN TRỰC TIẾP
+st.sidebar.header("Cấu hình mô hình")
+
+#điều chỉnh ngưỡng tin cậy từ 0.1 đến 1.0
+conf_threshold = st.sidebar.slider(
+    "Ngưỡng tin cậy (Confidence threshold)", 
+    min_value=0.1, max_value=1.0, value=0.20, step=0.05
+)
+
+# Kích thước ảnh đầu vào (1280/640)
+img_size = st.sidebar.selectbox("Kích thước ảnh đầu vào (imgsz):", [1280, 640], index=0)
+
+st.sidebar.info(f"Đang chạy trên thiết bị: **{torch.cuda.get_device_name(0) if device == 0 else 'CPU'}**")
+
+# 4. KHU VỰC TẢI LÊN DỮ LIỆU
+file_type = st.radio("Chọn loại dữ liệu đầu vào:", ("Hình ảnh", "Video"))
+uploaded_file = st.file_uploader(f"Tải lên {file_type.lower()} của bạn tại đây:", type=["jpg", "jpeg", "png", "mp4"])
+
+if uploaded_file is not None:
+    # XỬ LÝ HÌNH ẢNH (IMAGE INFERENCE)
+    if file_type == "Hình ảnh":
+        # Đọc ảnh bằng OpenCV
+        file_bytes = np.asarray(bytearray(uploaded_file.read()), dtype=np.uint8)
+        image = cv2.imdecode(file_bytes, cv2.IMREAD_COLOR)
+        
+        # Dự đoán bằng YOLOv10
+        with st.spinner("Đang nhận diện hình ảnh..."):
+            results = model.predict(
+                source=image, 
+                device=device, 
+                imgsz=img_size, 
+                conf=conf_threshold, 
+                iou=0.6
+            )
+
+        annotated_image = image.copy()
+        # Vẽ khung lên ảnh
+        if results[0].boxes is not None:
+            for box in results[0].boxes:
+                x1, y1, x2, y2 = box.xyxy[0].cpu().numpy().astype(int)
+                cls_id = int(box.cls[0].cpu().item())
+                conf = float(box.conf[0].cpu().item())
+                
+                if cls_id in CLASS_NAMES:
+                    label = f"{CLASS_NAMES[cls_id]} {conf:.2f}"
+                    cv2.rectangle(annotated_image, (x1, y1), (x2, y2), (0, 255, 0), 2)
+                    cv2.putText(annotated_image, label, (x1, y1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
+
+        # Hiển thị 2 cột ảnh (Ảnh gốc vs Ảnh kết quả)
+        col1, col2 = st.columns(2)
+        with col1:
+            st.image(cv2.cvtColor(image, cv2.COLOR_BGR2RGB), caption="Ảnh gốc tải lên", use_container_width=True)
+        with col2:
+            st.image(cv2.cvtColor(annotated_image, cv2.COLOR_BGR2RGB), caption="Ảnh kết quả dự đoán", use_container_width=True)
+
+    # XỬ LÝ VIDEO (VIDEO INFERENCE)
+    elif file_type == "Video":
+        # Lưu file video tải lên vào một file tạm thời
+        tfile = tempfile.NamedTemporaryFile(delete=False) 
+        tfile.write(uploaded_file.read())
+        
+        cap = cv2.VideoCapture(tfile.name)
+        st_frame = st.empty()  # Khung trống để Streamlit cập nhật video liên tục
+
+        st.info("Đang xử lý video và hiển thị trực tiếp bên dưới...")
+        
+        # Tạo nút bấm dừng xử lý video nếu cần
+        stop_button = st.button("Dừng xử lý video")
+        
         while cap.isOpened():
+            if stop_button:
+                break
+                
             ret, frame = cap.read()
             if not ret:
                 break
+                
+            # Sử dụng YOLOv10 + ByteTrack để theo dõi phương tiện
+            results = model.track(
+                source=frame, 
+                persist=True, 
+                tracker="bytetrack.yaml", 
+                device=device, 
+                imgsz=img_size, 
+                conf=conf_threshold, 
+                iou=0.45,
+                verbose=False
+            )
+            
+            # Vẽ kết quả tracking lên từng khung hình của video
+            if results[0].boxes.id is not None:
+                boxes = results[0].boxes.xyxy.cpu().numpy().astype(int)
+                ids = results[0].boxes.id.cpu().numpy().astype(int)
+                clss = results[0].boxes.cls.cpu().numpy().astype(int)
 
-            results = model.predict(source=frame, imgsz=image_size, conf=conf_threshold)
-            annotated_frame = results[0].plot()
-            out.write(annotated_frame)
+                for box, obj_id, cls_id in zip(boxes, ids, clss):
+                    if cls_id in CLASS_NAMES:
+                        x1, y1, x2, y2 = box
+                        cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
+                        label = f"{CLASS_NAMES[cls_id]} #{obj_id}"
+                        cv2.putText(frame, label, (x1, y1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
 
+            # Chuyển đổi màu từ BGR sang RGB và hiển thị lên Web
+            st_frame.image(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB), channels="RGB", use_container_width=True)
+            
+            # Tạo khoảng trễ nhỏ (1ms) để giảm tải cho CPU/GPU
+            time.sleep(0.001)
+            
+        # Giải phóng bộ nhớ sau khi hoàn tất video
         cap.release()
-        out.release()
-
-        return None, output_video_path
-
-
-def yolov10_inference_for_examples(image, model_path, image_size, conf_threshold):
-    annotated_image, _ = yolov10_inference(image, None, model_path, image_size, conf_threshold)
-    return annotated_image
-
-
-def app():
-    with gr.Blocks():
-        with gr.Row():
-            with gr.Column():
-                image = gr.Image(type="pil", label="Image", visible=True)
-                video = gr.Video(label="Video", visible=False)
-                input_type = gr.Radio(
-                    choices=["Image", "Video"],
-                    value="Image",
-                    label="Input Type",
-                )
-                model_id = gr.Dropdown(
-                    label="Model",
-                    choices=[
-                        "yolov10n",
-                        "yolov10s",
-                        "yolov10m",
-                        "yolov10b",
-                        "yolov10l",
-                        "yolov10x",
-                    ],
-                    value="yolov10m",
-                )
-                image_size = gr.Slider(
-                    label="Image Size",
-                    minimum=320,
-                    maximum=1280,
-                    step=32,
-                    value=640,
-                )
-                conf_threshold = gr.Slider(
-                    label="Confidence Threshold",
-                    minimum=0.0,
-                    maximum=1.0,
-                    step=0.05,
-                    value=0.25,
-                )
-                yolov10_infer = gr.Button(value="Detect Objects")
-
-            with gr.Column():
-                output_image = gr.Image(type="numpy", label="Annotated Image", visible=True)
-                output_video = gr.Video(label="Annotated Video", visible=False)
-
-        def update_visibility(input_type):
-            image = gr.update(visible=True) if input_type == "Image" else gr.update(visible=False)
-            video = gr.update(visible=False) if input_type == "Image" else gr.update(visible=True)
-            output_image = gr.update(visible=True) if input_type == "Image" else gr.update(visible=False)
-            output_video = gr.update(visible=False) if input_type == "Image" else gr.update(visible=True)
-
-            return image, video, output_image, output_video
-
-        input_type.change(
-            fn=update_visibility,
-            inputs=[input_type],
-            outputs=[image, video, output_image, output_video],
-        )
-
-        def run_inference(image, video, model_id, image_size, conf_threshold, input_type):
-            if input_type == "Image":
-                return yolov10_inference(image, None, model_id, image_size, conf_threshold)
-            else:
-                return yolov10_inference(None, video, model_id, image_size, conf_threshold)
-
-
-        yolov10_infer.click(
-            fn=run_inference,
-            inputs=[image, video, model_id, image_size, conf_threshold, input_type],
-            outputs=[output_image, output_video],
-        )
-
-        gr.Examples(
-            examples=[
-                [
-                    "ultralytics/assets/bus.jpg",
-                    "yolov10s",
-                    640,
-                    0.25,
-                ],
-                [
-                    "ultralytics/assets/zidane.jpg",
-                    "yolov10s",
-                    640,
-                    0.25,
-                ],
-            ],
-            fn=yolov10_inference_for_examples,
-            inputs=[
-                image,
-                model_id,
-                image_size,
-                conf_threshold,
-            ],
-            outputs=[output_image],
-            cache_examples='lazy',
-        )
-
-gradio_app = gr.Blocks()
-with gradio_app:
-    gr.HTML(
-        """
-    <h1 style='text-align: center'>
-    YOLOv10: Real-Time End-to-End Object Detection
-    </h1>
-    """)
-    gr.HTML(
-        """
-        <h3 style='text-align: center'>
-        <a href='https://arxiv.org/abs/2405.14458' target='_blank'>arXiv</a> | <a href='https://github.com/THU-MIG/yolov10' target='_blank'>github</a>
-        </h3>
-        """)
-    with gr.Row():
-        with gr.Column():
-            app()
-if __name__ == '__main__':
-    gradio_app.launch()
+        cv2.destroyAllWindows()
+        st.success("Xử lý video hoàn tất!")
