@@ -1,0 +1,13 @@
+# Ultralytics YOLO Multi-Object Tracker v10 - Optimized by Bayesian Optimization
+tracker_type: bytetrack   # Bắt buộc đặt lên đầu tiên để định danh thuật toán
+
+track_high_thresh: 0.41   # Ngưỡng bắt vết tin cậy cao
+track_low_thresh: 0.0386  # Ngưỡng giữ vết khi xe bị che khuất sát đáy
+new_track_thresh: 0.46    # Đã làm tròn mượt mà cho việc cấp ID mới
+track_buffer: 67          # Khóa bộ nhớ lưu vết trong 2.2 giây
+match_thresh: 0.53        # Ngưỡng bắt cặp Hungarian mở rộng chống lạng lách
+
+# Các tham số tối ưu hóa ma trận toàn cục giải phóng RAM/VRAM cho GPU
+fuse_score: true
+gating_local: false
+gating_thres: 25.5

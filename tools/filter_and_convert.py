@@ -2,9 +2,7 @@ import os
 import shutil
 import xml.etree.ElementTree as ET
 
-# =====================================================================
 # 1. CAU HINH DUONG DAN CHINH XAC GIUA 2 O DIA
-# =====================================================================
 # Nguon du lieu tho (Anh + XML) o o D cua ban
 SRC_IMG_DIR = r'D:/Downloads/archive/DETRAC-Images/DETRAC-Images'          
 SRC_XML_DIR = r'D:/Downloads/archive/DETRAC-Train-Annotations-XML/DETRAC-Train-Annotations-XML'
@@ -15,9 +13,7 @@ DST_ROOT_DIR = r'G:/My Drive/YOLOv10_AI/Dataset'
 # Dinh nghia chinh xac 4 lop doi tuong
 CLASSES = ['car', 'motorcycle', 'bus', 'truck']
 
-# =====================================================================
 # 2. CAC HAM TIEN XU LY VA CHUYEN DOI
-# =====================================================================
 def convert_coordinates(size, box):
     dw = 1.0 / size[0]
     dh = 1.0 / size[1]

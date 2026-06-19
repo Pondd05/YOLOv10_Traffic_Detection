@@ -22,4 +22,4 @@ try:
     print(f"Lúc {now}, dữ liệu đã nhảy lên Google Sheets thành công!")
 
 except Exception as e:
-    print(f"Lỗi rồi Phong ơi: {e}")
+    print(f"Lỗi: {e}")

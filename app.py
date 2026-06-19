@@ -1,151 +1,148 @@
-import streamlit as st
 import cv2
 import numpy as np
-import tempfile
-import time
-from ultralytics import YOLOv10
 import torch
+import streamlit as st
+from ultralytics import YOLO
+import tempfile
+import os
 
-# 1. CẤU HÌNH BAN ĐẦU & GIAO DIỆN WEB
-st.set_page_config(
-    page_title="Hệ thống Nhận diện Phương tiện", 
-    layout="wide",
-    initial_sidebar_state="expanded"
-)
-
-st.title("Ứng dụng Nhận diện & Theo dõi Phương tiện Giao thông")
+# CẤU HÌNH GIAO DIỆN WEB STREAMLIT (UI/UX)
+st.set_page_config(page_title="UIT Traffic Enforcement System", page_icon="🚘", layout="wide")
+st.title("🚘 Hệ Thống Giám Sát Giao Thông Thông Minh - UIT")
 st.markdown("---")
 
-# Đường dẫn file best.pt
+st.sidebar.header("⚙️ Cấu Hình")
+source_type = st.sidebar.radio("Chọn đầu vào:", ("Hình ảnh", "Video"))
+
+# KHỞI TẠO MÔ HÌNH VÀ THUẬT TOÁN (Sửa lỗi YOLOv10 & ByteTrack)
 MODEL_PATH = r"D:\UIT\Do_An1_2_KLTN\test\yolov10\YOLOv10_Traffic_Full\Kaggle_Full_Train_V2\weights\best.pt"
+TRACKER_CONFIG = "custom_bytetrack.yaml" # <--- Đảm bảo file này có 'fuse_score: True'
 
-# class id phương tiện
-CLASS_NAMES = {0: "Motobike", 1: "Car", 2: "Bus", 3: "Truck"}
+device = "cuda:0" if torch.cuda.is_available() else "cpu"
+st.sidebar.info(f"Phần cứng: **{device.upper()}**")
 
-# 2. LOAD MÔ HÌNH VÀO CACHE
 @st.cache_resource
-def load_yolo_model(model_path):
+def load_yolo_model():
+    # Ép tác vụ task="detect" để sửa lỗi .shape của YOLOv10
+    return YOLO(MODEL_PATH, task="detect")
+
+with st.spinner("Đang tải YOLOv10m..."):
+    model = load_yolo_model()
+
+# Định nghĩa lại vùng đa giác ảo ROI (Màu vàng rực)
+# Tọa độ này được tối ưu để ôm khít làn đường hỗn hợp trong phối cảnh camera
+forbidden_lane_roi = np.array([
+    [220, 720],   # Dưới cùng bên trái
+    [520, 420],   # Trên cùng bên trái
+    [820, 420],   # Trên cùng bên phải
+    [1120, 720]   # Dưới cùng bên phải
+], np.int32)
+
+# HÀM TOÁN HỌC HÌNH HỌC NÂNG CAO: TÍNH ĐIỂM CHẠM ĐẤT
+def get_foot_point(x_min, x_max, y_max):
     """
-    Nạp mô hình YOLOv10 vào bộ nhớ đệm của Streamlit.
+    Tính toán Điểm chạm đất ( Bottom-Center Centroid).
+    Điểm này triệt tiêu sai số do chiều cao phương tiện tạo ra.
     """
-    return YOLOv10(model_path)
+    x_foot = int((x_min + x_max) / 2)
+    y_foot = int(y_max)
+    return (x_foot, y_foot)
 
-try:
-    model = load_yolo_model(MODEL_PATH)
-    device = 0 if torch.cuda.is_available() else "cpu"
-except Exception as e:
-    st.error(f"Không thể load mô hình từ đường dẫn: {MODEL_PATH}. Hãy kiểm tra lại file của bạn.")
-    st.stop()
-
-# 3. SIDEBAR: ĐIỀU CHỈNH SIÊU THAM SỐ SUY LUẬN TRỰC TIẾP
-st.sidebar.header("Cấu hình mô hình")
-
-#điều chỉnh ngưỡng tin cậy từ 0.1 đến 1.0
-conf_threshold = st.sidebar.slider(
-    "Ngưỡng tin cậy (Confidence threshold)", 
-    min_value=0.1, max_value=1.0, value=0.20, step=0.05
-)
-
-# Kích thước ảnh đầu vào (1280/640)
-img_size = st.sidebar.selectbox("Kích thước ảnh đầu vào (imgsz):", [1280, 640], index=0)
-
-st.sidebar.info(f"Đang chạy trên thiết bị: **{torch.cuda.get_device_name(0) if device == 0 else 'CPU'}**")
-
-# 4. KHU VỰC TẢI LÊN DỮ LIỆU
-file_type = st.radio("Chọn loại dữ liệu đầu vào:", ("Hình ảnh", "Video"))
-uploaded_file = st.file_uploader(f"Tải lên {file_type.lower()} của bạn tại đây:", type=["jpg", "jpeg", "png", "mp4"])
-
-if uploaded_file is not None:
-    # XỬ LÝ HÌNH ẢNH (IMAGE INFERENCE)
-    if file_type == "Hình ảnh":
-        # Đọc ảnh bằng OpenCV
-        file_bytes = np.asarray(bytearray(uploaded_file.read()), dtype=np.uint8)
-        image = cv2.imdecode(file_bytes, cv2.IMREAD_COLOR)
-        
-        # Dự đoán bằng YOLOv10
-        with st.spinner("Đang nhận diện hình ảnh..."):
-            results = model.predict(
-                source=image, 
-                device=device, 
-                imgsz=img_size, 
-                conf=conf_threshold, 
-                iou=0.6
-            )
-
-        annotated_image = image.copy()
-        # Vẽ khung lên ảnh
-        if results[0].boxes is not None:
-            for box in results[0].boxes:
-                x1, y1, x2, y2 = box.xyxy[0].cpu().numpy().astype(int)
-                cls_id = int(box.cls[0].cpu().item())
-                conf = float(box.conf[0].cpu().item())
-                
-                if cls_id in CLASS_NAMES:
-                    label = f"{CLASS_NAMES[cls_id]} {conf:.2f}"
-                    cv2.rectangle(annotated_image, (x1, y1), (x2, y2), (0, 255, 0), 2)
-                    cv2.putText(annotated_image, label, (x1, y1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
-
-        # Hiển thị 2 cột ảnh (Ảnh gốc vs Ảnh kết quả)
-        col1, col2 = st.columns(2)
-        with col1:
-            st.image(cv2.cvtColor(image, cv2.COLOR_BGR2RGB), caption="Ảnh gốc tải lên", use_container_width=True)
-        with col2:
-            st.image(cv2.cvtColor(annotated_image, cv2.COLOR_BGR2RGB), caption="Ảnh kết quả dự đoán", use_container_width=True)
-
-    # XỬ LÝ VIDEO (VIDEO INFERENCE)
-    elif file_type == "Video":
-        # Lưu file video tải lên vào một file tạm thời
-        tfile = tempfile.NamedTemporaryFile(delete=False) 
-        tfile.write(uploaded_file.read())
+# XỬ LÝ VIDEO VÀ ĐỒ HỌA BYTETRACK
+if source_type == "Video":
+    uploaded_video = st.sidebar.file_uploader("Tải video lên đây:", type=['mp4', 'avi'])
+    
+    if uploaded_video is not None:
+        tfile = tempfile.NamedTemporaryFile(delete=False)
+        tfile.write(uploaded_video.read())
         
         cap = cv2.VideoCapture(tfile.name)
-        st_frame = st.empty()  # Khung trống để Streamlit cập nhật video liên tục
-
-        st.info("Đang xử lý video và hiển thị trực tiếp bên dưới...")
+        st_frame = st.empty()
         
-        # Tạo nút bấm dừng xử lý video nếu cần
-        stop_button = st.button("Dừng xử lý video")
+        # Bộ đệm lọc nhiễu thời gian
+        violation_counter = {}
         
-        while cap.isOpened():
-            if stop_button:
+        stop_button = st.sidebar.button("⏹️ Dừng xử lý")
+        
+        while cap.isOpened() and not stop_button:
+            success, frame = cap.read()
+            if not success:
                 break
                 
-            ret, frame = cap.read()
-            if not ret:
-                break
-                
-            # Sử dụng YOLOv10 + ByteTrack để theo dõi phương tiện
+            # Vẽ ROI màu vàng
+            cv2.polylines(frame, [forbidden_lane_roi], isClosed=True, color=(0, 255, 255), thickness=3)
+            
+            # Kích hoạt Custom ByteTrack
             results = model.track(
-                source=frame, 
-                persist=True, 
-                tracker="bytetrack.yaml", 
-                device=device, 
-                imgsz=img_size, 
-                conf=conf_threshold, 
-                iou=0.45,
-                verbose=False
+                source=frame, persist=True, tracker=TRACKER_CONFIG,
+                imgsz=640, half=True, device=device, verbose=False
             )
             
-            # Vẽ kết quả tracking lên từng khung hình của video
+            speed = results[0].speed
+            fps = 1000 / (speed['preprocess'] + speed['inference'] + speed['postprocess'])
+            
+            # Cấu trúc gán vết ByteTrack
             if results[0].boxes.id is not None:
-                boxes = results[0].boxes.xyxy.cpu().numpy().astype(int)
+                boxes = results[0].boxes.xyxy.cpu().numpy()
                 ids = results[0].boxes.id.cpu().numpy().astype(int)
                 clss = results[0].boxes.cls.cpu().numpy().astype(int)
-
+                
+                # Biến để vẽ nhãn gọn gàng
+                labels_positions = []
+                current_frame_ids = set(ids)
+                
                 for box, obj_id, cls_id in zip(boxes, ids, clss):
-                    if cls_id in CLASS_NAMES:
-                        x1, y1, x2, y2 = box
-                        cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
-                        label = f"{CLASS_NAMES[cls_id]} #{obj_id}"
-                        cv2.putText(frame, label, (x1, y1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
-
-            # Chuyển đổi màu từ BGR sang RGB và hiển thị lên Web
-            st_frame.image(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB), channels="RGB", use_container_width=True)
+                    x_min, y_min, x_max, y_max = map(int, box)
+                    class_name = model.names[cls_id]
+                    
+                    # LOGIC HÌNH HỌC PHÂN LÀN ROI
+                    # Gọi hàm toán học tính điểm chạm đất chuẩn
+                    x_foot, y_foot = get_foot_point(x_min, x_max, y_max)
+                    
+                    # Giải thuật Point-in-Polygon kiểm tra lấn làn
+                    is_inside = cv2.pointPolygonTest(forbidden_lane_roi, (x_foot, y_foot), False)
+                    
+                    box_color = (0, 255, 0) # Xanh lá = OK
+                    status_text = "OK"
+                    
+                    if is_inside >= 0:
+                        # Điểm chạm đất lọt vào đa giác cấm
+                        violation_counter[obj_id] = violation_counter.get(obj_id, 0) + 1
+                        
+                        # Bộ lọc thời gian: Phải đi sai làn liên tục 15 frames (~0.5 giây)
+                        if violation_counter[obj_id] >= 15:
+                            box_color = (0, 0, 255) # Đỏ rực = VIOLATION
+                            status_text = "VIOLATION"
+                    else:
+                        # Phương tiện đi ra khỏi vùng cấm, giảm dần bộ đếm về 0
+                        if obj_id in violation_counter:
+                            violation_counter[obj_id] = max(0, violation_counter[obj_id] - 1)
+                    
+                    # VẼ ĐỒ HỌA TRỰC QUAN (Fix lỗi Render Chồng Chéo)
+                    # 1. Vẽ điểm chạm đất (Chấm đỏ)
+                    cv2.circle(frame, (x_foot, y_foot), 6, (0, 0, 255), -1)
+                    
+                    # 2. Vẽ khung bao (Bounding Box) màu xanh/đỏ ôm sát phương tiện
+                    cv2.rectangle(frame, (x_min, y_min), (x_max, y_max), box_color, 2)
+                    
+                    # 3. Tối ưu hóa vị trí Text nhãn: "Lớp #ID [Trạng thái]"
+                    label_txt = f"{class_name} #{obj_id} [{status_text}]"
+                    
+                    # Kiểm tra và điều chỉnh vị trí nhãn để không bị che khuất
+                    label_y_pos = y_min - 10 if y_min > 20 else y_min + 15
+                    cv2.putText(frame, label_txt, (x_min, label_y_pos), cv2.FONT_HERSHEY_SIMPLEX, 0.45, box_color, 1, cv2.LINE_AA)
+                
+                # Giải phóng bộ nhớ đệm ID rác
+                for cached_id in list(violation_counter.keys()):
+                    if cached_id not in current_frame_ids:
+                        del violation_counter[cached_id]
             
-            # Tạo khoảng trễ nhỏ (1ms) để giảm tải cho CPU/GPU
-            time.sleep(0.001)
+            # Đóng gói đồ họa FPS thời gian thực
+            cv2.putText(frame, f"Performance: {fps:.1f} FPS", (20, 40), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 255), 2, cv2.LINE_AA)
             
-        # Giải phóng bộ nhớ sau khi hoàn tất video
+            # Chuyển hệ màu để Streamlit Web render chính xác
+            rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            st_frame.image(rgb_frame, channels="RGB", use_container_width=True)
+            
         cap.release()
-        cv2.destroyAllWindows()
-        st.success("Xử lý video hoàn tất!")
+        st.sidebar.success("Xử lý dữ liệu hoàn tất!")

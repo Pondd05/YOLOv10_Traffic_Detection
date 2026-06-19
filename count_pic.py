@@ -7,9 +7,7 @@ def count_dataset_images():
     # Danh sách các tập dữ liệu cần kiểm tra
     sub_folders = ['train', 'valid', 'test']
     
-    print("="*45)
     print("THỐNG KÊ SỐ LƯỢNG ẢNH TRONG DATASET:")
-    print("="*45)
     
     total_images = 0
     
@@ -26,9 +24,8 @@ def count_dataset_images():
         else:
             print(f"Thư mục '{folder}/images' KHÔNG tồn tại!")
             
-    print("-"*45)
     print(f"Tổng cộng tất cả các tập: {total_images} ảnh")
-    print("="*45)
+    
 
 if __name__ == '__main__':
     count_dataset_images()
