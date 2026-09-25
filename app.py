@@ -15,8 +15,13 @@ st.sidebar.header("⚙️ Cấu Hình")
 source_type = st.sidebar.radio("Chọn đầu vào:", ("Hình ảnh", "Video"))
 
 # KHỞI TẠO MÔ HÌNH VÀ THUẬT TOÁN (Sửa lỗi YOLOv10 & ByteTrack)
-MODEL_PATH = r"D:\UIT\Do_An1_2_KLTN\test\yolov10\YOLOv10_Traffic_Full\Kaggle_Full_Train_V2\weights\best.pt"
-TRACKER_CONFIG = "custom_bytetrack.yaml" # <--- Đảm bảo file này có 'fuse_score: True'
+current_folder = os.path.dirname(os.path.abspath(__file__))
+local_model = os.path.join(current_folder, "best.pt")
+custom_model = r"D:\UIT\Do_An1_2_KLTN\test\yolov10\YOLOv10_Traffic_Full\Kaggle_Full_Train_V2\weights\best.pt"
+MODEL_PATH = custom_model if os.path.exists(custom_model) else local_model
+
+tracker_file = os.path.join(current_folder, "custom_bytetrack.yaml")
+TRACKER_CONFIG = tracker_file if os.path.exists(tracker_file) else "custom_bytetrack.yaml"
 
 device = "cuda:0" if torch.cuda.is_available() else "cpu"
 st.sidebar.info(f"Phần cứng: **{device.upper()}**")

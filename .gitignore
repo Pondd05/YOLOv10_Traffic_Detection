@@ -143,6 +143,17 @@ runs/
 wandb/
 tests/
 .DS_Store
+video test/*
+!video test/.gitkeep
+*.mov
+*.mp4
+*.avi
+*.mkv
+
+# Reports / Bao cao tien do
+BAO_CAO_*.md
+NOI_DUNG_BAO_CAO_*.md
+
 
 # Neural Network weights -----------------------------------------------------------------------------------------------
 weights/

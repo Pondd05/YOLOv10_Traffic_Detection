@@ -1,0 +1,191 @@
+{
+  "version": 1,
+  "source_video": "vecteezy_a-traffic-jam-at-the-busy-town-in-ho-chi-minh-long-shot_44238658.mov",
+  "reference_resolution": [
+    1920,
+    1080
+  ],
+  "total_lanes": 6,
+  "total_boundaries": 0,
+  "supported_classes": [
+    "car",
+    "motorcycle",
+    "bus",
+    "truck"
+  ],
+  "lanes": [
+    {
+      "id": 1,
+      "name": "Lan 1 - Xe may",
+      "code": "lane_motorcycle",
+      "direction": "down",
+      "allowed_classes": [
+        "motorcycle"
+      ],
+      "polygon": [
+        [
+          0.27604,
+          0.525
+        ],
+        [
+          0.31458,
+          0.53241
+        ],
+        [
+          0.09479,
+          0.99074
+        ],
+        [
+          0.03125,
+          0.94074
+        ]
+      ]
+    },
+    {
+      "id": 2,
+      "name": "Lan 2 - Hon hop",
+      "code": "lane_mixed",
+      "direction": "down",
+      "allowed_classes": [
+        "car",
+        "motorcycle",
+        "bus",
+        "truck"
+      ],
+      "polygon": [
+        [
+          0.31406,
+          0.52963
+        ],
+        [
+          0.39687,
+          0.53796
+        ],
+        [
+          0.26719,
+          1.05185
+        ],
+        [
+          0.10521,
+          0.9713
+        ]
+      ]
+    },
+    {
+      "id": 3,
+      "name": "Lan 3 - O to",
+      "code": "lane_car",
+      "direction": "down",
+      "allowed_classes": [
+        "car",
+        "bus",
+        "truck"
+      ],
+      "polygon": [
+        [
+          0.39479,
+          0.54259
+        ],
+        [
+          0.48646,
+          0.55463
+        ],
+        [
+          0.48594,
+          1.05926
+        ],
+        [
+          0.26667,
+          1.04074
+        ]
+      ]
+    },
+    {
+      "id": 4,
+      "name": "Lan 4 - O to",
+      "code": "lane_car",
+      "direction": "down",
+      "allowed_classes": [
+        "car",
+        "bus",
+        "truck"
+      ],
+      "polygon": [
+        [
+          0.50313,
+          0.54444
+        ],
+        [
+          0.59688,
+          0.54537
+        ],
+        [
+          0.74531,
+          1.04074
+        ],
+        [
+          0.53333,
+          1.05
+        ]
+      ]
+    },
+    {
+      "id": 5,
+      "name": "Lan 5 - Hon hop",
+      "code": "lane_mixed",
+      "direction": "down",
+      "allowed_classes": [
+        "car",
+        "motorcycle",
+        "bus",
+        "truck"
+      ],
+      "polygon": [
+        [
+          0.59167,
+          0.54259
+        ],
+        [
+          0.67969,
+          0.53704
+        ],
+        [
+          0.94063,
+          1.025
+        ],
+        [
+          0.74896,
+          1.04722
+        ]
+      ]
+    },
+    {
+      "id": 6,
+      "name": "Lan 6 - Xe may",
+      "code": "lane_motorcycle",
+      "direction": "down",
+      "allowed_classes": [
+        "motorcycle"
+      ],
+      "polygon": [
+        [
+          0.68229,
+          0.53889
+        ],
+        [
+          0.73542,
+          0.52685
+        ],
+        [
+          0.99896,
+          0.92593
+        ],
+        [
+          0.93542,
+          1.00278
+        ]
+      ]
+    }
+  ],
+  "boundaries": []
+}
