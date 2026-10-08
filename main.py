@@ -57,6 +57,75 @@ def auto_adaptive_preprocessing(frame):
     return cleaned_frame
 
 
+class BEVTransformer:
+    def __init__(self, lanes_data, frame_w, frame_h, bev_w=400, bev_h=600):
+        self.bev_w = bev_w
+        self.bev_h = bev_h
+        
+        # Extract 4 outermost corners from all lanes to form the Source Quad
+        all_points = []
+        for lane in lanes_data:
+            all_points.extend(lane["polygon_px"])
+        all_points = np.array(all_points)
+        
+        if len(all_points) < 4:
+            self.M = None
+            return
+
+        # Sort points by Y to separate Top and Bottom points
+        sorted_y = all_points[all_points[:, 1].argsort()]
+        top_points = sorted_y[:len(sorted_y)//2]
+        bottom_points = sorted_y[len(sorted_y)//2:]
+        
+        # Find corners
+        tl = top_points[top_points[:, 0].argmin()]
+        tr = top_points[top_points[:, 0].argmax()]
+        bl = bottom_points[bottom_points[:, 0].argmin()]
+        br = bottom_points[bottom_points[:, 0].argmax()]
+        
+        self.src_pts = np.float32([tl, tr, br, bl])
+        self.dst_pts = np.float32([
+            [0, 0], 
+            [self.bev_w, 0], 
+            [self.bev_w, self.bev_h], 
+            [0, self.bev_h]
+        ])
+        
+        # DLT Algorithm to compute Perspective Transform Matrix
+        self.M = cv2.getPerspectiveTransform(self.src_pts, self.dst_pts)
+        
+        # Transform Lane Polygons to BEV space
+        self.bev_lanes = []
+        for lane in lanes_data:
+            pts = np.float32(lane["polygon_px"]).reshape(-1, 1, 2)
+            bev_pts = cv2.perspectiveTransform(pts, self.M).reshape(-1, 2).astype(np.int32)
+            self.bev_lanes.append({**lane, "polygon_px": bev_pts})
+            
+    def transform_point(self, pt):
+        if self.M is None: return pt
+        p = np.float32([[[pt[0], pt[1]]]])
+        p_bev = cv2.perspectiveTransform(p, self.M)
+        return int(p_bev[0][0][0]), int(p_bev[0][0][1])
+
+    def draw_bev_map(self, vehicles_bev):
+        """ Draw a top-down radar map of the lanes and vehicles """
+        bev_map = np.zeros((self.bev_h, self.bev_w, 3), dtype=np.uint8)
+        
+        # Draw Lanes in BEV
+        for i, lane in enumerate(self.bev_lanes):
+            poly = lane["polygon_px"]
+            color = (50, 50, 50) if i % 2 == 0 else (70, 70, 70)
+            cv2.fillPoly(bev_map, [poly], color)
+            cv2.polylines(bev_map, [poly], True, (150, 150, 150), 1)
+            
+        # Draw Vehicles in BEV
+        for (x, y, color) in vehicles_bev:
+            cv2.circle(bev_map, (x, y), 6, color, -1)
+            cv2.circle(bev_map, (x, y), 8, (255, 255, 255), 1)
+            
+        return bev_map
+
+
 def main():
     # 1. KHỞI TẠO ĐƯỜNG DẪN VÀ PHẦN CỨNG
     current_folder = os.path.dirname(os.path.abspath(__file__))
@@ -158,6 +227,12 @@ def main():
     else:
         print("[SYSTEM] Không tìm thấy 'lane_config.json'. Sử dụng vùng ROI đa giác cấm mặc định.")
 
+    bev_transformer = None
+    if lanes_data:
+        bev_transformer = BEVTransformer(lanes_data, width, height)
+        if bev_transformer.M is not None:
+            print("[SYSTEM] Đã khởi tạo thành công không gian Bird's-Eye View (BEV).")
+
     # ĐỊNH NGHĨA VÙNG ĐA GIÁC ẢO ROI DỰ PHÒNG (NẾU CHƯA CÓ lane_config.json)
     forbidden_lane_roi = np.array([
         [int(width * 0.15), height],
@@ -214,6 +289,8 @@ def main():
         latency_ms = speed['preprocess'] + speed['inference'] + speed['postprocess']
         fps = 1000 / latency_ms if latency_ms > 0 else 0
 
+        vehicles_bev = []
+        
         # BƯỚC 4: TRÍCH XUẤT MA TRẬN PHÂN ĐỊNH VÀ LOGIC HÌNH HỌC ROI
         if results[0].boxes.id is not None:
             boxes = results[0].boxes.xyxy.cpu().numpy()            # Ma trận tọa độ phẳng Bounding Box
@@ -232,15 +309,27 @@ def main():
 
                 box_color = (0, 255, 0) # Mặc định màu XANH LÁ CÂY = Hợp lệ
                 status_text = "OK"
+                
+                # Transform to BEV space if available
+                if bev_transformer and bev_transformer.M is not None:
+                    x_bev, y_bev = bev_transformer.transform_point((x_foot, y_foot))
+                    check_pt = (x_bev, y_bev)
+                    check_lanes = bev_transformer.bev_lanes
+                    vehicles_bev.append((x_bev, y_bev, box_color))
+                else:
+                    check_pt = (x_foot, y_foot)
+                    check_lanes = lanes_data
 
-                # KIỂM TRA SAI LÀN: Ưu tiên dùng lane_config.json nếu có
-                if lanes_data:
-                    is_violation, lane_name, reason = check_vehicle_lane_violation((x_foot, y_foot), class_name, lanes_data)
+                # KIỂM TRA SAI LÀN BẰNG BỘ QUY TẮC
+                if check_lanes:
+                    is_violation, lane_name, reason = check_vehicle_lane_violation(check_pt, class_name, check_lanes)
                     if is_violation:
                         violation_counter[obj_id] = violation_counter.get(obj_id, 0) + 1
                         if violation_counter[obj_id] >= 10: # Lấn làn liên tục > 10 frames
                             box_color = (0, 0, 255) # ĐỔI SANG MÀU ĐỎ
                             status_text = f"SAI LAN ({lane_name})"
+                            if bev_transformer and bev_transformer.M is not None:
+                                vehicles_bev[-1] = (x_bev, y_bev, box_color) # Update BEV color
                     else:
                         if obj_id in violation_counter:
                             violation_counter[obj_id] = max(0, violation_counter[obj_id] - 1)
@@ -274,6 +363,11 @@ def main():
 
         # Đẩy ma trận ảnh đồ họa hoàn chỉnh hiển thị ra ngoài cửa sổ Desktop của hệ điều hành Windows
         cv2.imshow("UIT Traffic Enforcement System - Main.py High-Speed Pipeline", frame_processed)
+        
+        # Hỗ trợ hiển thị Không gian BEV Radar Map
+        if bev_transformer and bev_transformer.M is not None:
+            bev_map = bev_transformer.draw_bev_map(vehicles_bev)
+            cv2.imshow("BEV Radar Map - Hybrid Space", bev_map)
 
         # Lắng nghe sự kiện bàn phím: Bấm phím 'q' để dừng tiến trình chủ động
         if cv2.waitKey(1) & 0xFF == ord('q'):
