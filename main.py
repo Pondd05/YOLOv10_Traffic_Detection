@@ -384,9 +384,10 @@ def main():
             cv2.polylines(frame_processed, [forbidden_lane_roi], isClosed=True, color=(0, 255, 255), thickness=3)
 
         # BƯỚC 3: NẠP MA TRẬN ĐÃ LÀM SẠCH VÀO MÔ HÌNH AI (YOLOv10 + Custom ByteTrack)
+        # Tối ưu conf=0.18 và iou=0.45 để phát hiện nhạy bén toàn bộ xe máy, xe đông và vật thể ở xa
         results = model.track(
             source=frame_processed, persist=True, tracker=TRACKER_CONFIG,
-            imgsz=640, half=True, device=device, verbose=False
+            imgsz=640, conf=0.18, iou=0.45, half=True, device=device, verbose=False
         )
 
         # Tính toán tốc độ xử lý thực tế của Pipeline (FPS)
@@ -397,12 +398,18 @@ def main():
         vehicles_bev = []
         
         # BƯỚC 4: TRÍCH XUẤT MA TRẬN PHÂN ĐỊNH VÀ LOGIC HÌNH HỌC ROI
-        if results[0].boxes.id is not None:
-            boxes = results[0].boxes.xyxy.cpu().numpy()            # Ma trận tọa độ phẳng Bounding Box
-            ids = results[0].boxes.id.cpu().numpy().astype(int)    # Mảng danh sách mã định danh tĩnh ID từ ByteTrack
-            clss = results[0].boxes.cls.cpu().numpy().astype(int)  # Mảng Class ID phương tiện
+        boxes_obj = results[0].boxes
+        if len(boxes_obj) > 0:
+            boxes = boxes_obj.xyxy.cpu().numpy()            # Ma trận tọa độ phẳng Bounding Box
+            clss = boxes_obj.cls.cpu().numpy().astype(int)  # Mảng Class ID phương tiện
             
-            current_frame_ids = set(ids)
+            # Đảm bảo gán ID an toàn (kể cả phương tiện mới xuất hiện chưa kịp có ID từ tracker)
+            if boxes_obj.id is not None:
+                ids = boxes_obj.id.cpu().numpy().astype(int)
+            else:
+                ids = np.array([-1] * len(boxes))
+            
+            current_frame_ids = set([i for i in ids if i != -1])
 
             for box, obj_id, cls_id in zip(boxes, ids, clss):
                 x_min, y_min, x_max, y_max = map(int, box)
@@ -417,62 +424,73 @@ def main():
                 if bev_transformer and bev_transformer.M is not None:
                     x_bev, y_bev = bev_transformer.transform_point((x_foot, y_foot))
 
-                # Cập nhật tọa độ vào Bộ quản lý quỹ đạo (VehicleTrajectoryManager)
-                traj_manager.update(obj_id, (x_foot, y_foot), (x_bev, y_bev) if x_bev is not None else None)
+                if obj_id != -1:
+                    traj_manager.update(obj_id, (x_foot, y_foot), (x_bev, y_bev) if x_bev is not None else None)
 
                 box_color = (0, 255, 0) # Mặc định màu XANH LÁ CÂY = Hợp lệ
                 status_text = "OK"
                 
-                check_pt = (x_bev, y_bev) if (bev_transformer and bev_transformer.M is not None) else (x_foot, y_foot)
-                check_lanes = bev_transformer.bev_lanes if (bev_transformer and bev_transformer.M is not None) else lanes_data
+                # Kiểm tra trực tiếp trên không gian Camera để khớp chính xác 100% với vùng làn vẽ trên màn hình
+                check_pt = (x_foot, y_foot)
+                check_lanes = lanes_data
 
-                # KIỂM TRA SAI LÀN VÀ GÁN LÀN ỔN ĐỊNH BẰNG TEMPORAL VOTING
+                # KIỂM TRA SAI LÀN VÀ GÁN LÀN NHẠY BÉN (PHẢN HỒI TỨC THÌ)
                 if check_lanes:
                     is_violation, raw_lane_name, reason, allowed_cls = check_vehicle_lane_violation(check_pt, class_name, check_lanes)
-                    assigned_lane = traj_manager.assign_lane(obj_id, raw_lane_name)
+                    assigned_lane = traj_manager.assign_lane(obj_id, raw_lane_name) if obj_id != -1 else raw_lane_name
+                    display_lane = raw_lane_name if raw_lane_name != "Ngoai vung" else assigned_lane
 
                     if is_violation:
-                        violation_counter[obj_id] = violation_counter.get(obj_id, 0) + 1
-                        if violation_counter[obj_id] >= 10: # Lấn làn liên tục > 10 frames
-                            box_color = (0, 0, 255) # ĐỔI SANG MÀU ĐỎ
-                            status_text = f"SAI LAN ({assigned_lane})"
+                        v_key = obj_id if obj_id != -1 else f"temp_{x_foot}_{y_foot}"
+                        violation_counter[v_key] = violation_counter.get(v_key, 0) + 1
+                        # Lấn làn từ 3 frame (~0.1s) trở lên lập tức báo ĐỎ RỰC; 1-2 frame báo CAM CẢNH BÁO
+                        if violation_counter[v_key] >= 3:
+                            box_color = (0, 0, 255) # ĐỎ RỰC
+                            status_text = f"SAI LAN ({display_lane})"
+                        else:
+                            box_color = (0, 165, 255) # MÀU CAM CẢNH BÁO
+                            status_text = f"CANH BAO ({display_lane})"
                     else:
-                        if obj_id in violation_counter:
-                            violation_counter[obj_id] = max(0, violation_counter[obj_id] - 1)
-                        status_text = f"{assigned_lane}"
+                        v_key = obj_id if obj_id != -1 else f"temp_{x_foot}_{y_foot}"
+                        if v_key in violation_counter:
+                            violation_counter[v_key] = max(0, violation_counter[v_key] - 2)
+                        status_text = f"{display_lane}"
                 else:
                     # Kiểm tra theo ROI đa giác cấm mặc định
                     is_inside = cv2.pointPolygonTest(forbidden_lane_roi, (x_foot, y_foot), False)
+                    v_key = obj_id if obj_id != -1 else f"temp_{x_foot}_{y_foot}"
                     if is_inside >= 0:
-                        violation_counter[obj_id] = violation_counter.get(obj_id, 0) + 1
-                        if violation_counter[obj_id] >= 15:
+                        violation_counter[v_key] = violation_counter.get(v_key, 0) + 1
+                        if violation_counter[v_key] >= 5:
                             box_color = (0, 0, 255)
                             status_text = "VIOLATION"
                     else:
-                        if obj_id in violation_counter:
-                            violation_counter[obj_id] = max(0, violation_counter[obj_id] - 1)
+                        if v_key in violation_counter:
+                            violation_counter[v_key] = max(0, violation_counter[v_key] - 1)
 
                 if x_bev is not None:
                     vehicles_bev.append((x_bev, y_bev, box_color, obj_id, status_text))
 
                 # BIỂU DIỄN VỆT QUỸ ĐẠO TRÊN ẢNH CAMERA (Perspective Trajectory Trail)
-                smoothed_cam = traj_manager.get_smoothed_trajectory(obj_id, use_bev=False)
-                if len(smoothed_cam) >= 2:
-                    pts_cam = np.array(smoothed_cam, np.int32).reshape((-1, 1, 2))
-                    traj_color = (0, 0, 255) if (box_color == (0, 0, 255)) else (0, 255, 255)
-                    cv2.polylines(frame_processed, [pts_cam], isClosed=False, color=traj_color, thickness=2, lineType=cv2.LINE_AA)
+                if obj_id != -1:
+                    smoothed_cam = traj_manager.get_smoothed_trajectory(obj_id, use_bev=False)
+                    if len(smoothed_cam) >= 2:
+                        pts_cam = np.array(smoothed_cam, np.int32).reshape((-1, 1, 2))
+                        traj_color = (0, 0, 255) if (box_color == (0, 0, 255)) else (0, 255, 255)
+                        cv2.polylines(frame_processed, [pts_cam], isClosed=False, color=traj_color, thickness=2, lineType=cv2.LINE_AA)
 
                 # Render các thành phần đồ họa trực quan lên màn hình Desktop
                 cv2.circle(frame_processed, (x_foot, y_foot), 5, (0, 0, 255), -1) # Chấm đỏ gầm xe (Bottom-Center)
                 cv2.rectangle(frame_processed, (x_min, y_min), (x_max, y_max), box_color, 2) # Khung bao xe
                 
-                label = f"{class_name} #{obj_id} [{status_text}]"
+                id_label = f"#{obj_id}" if obj_id != -1 else ""
+                label = f"{class_name} {id_label} [{status_text}]"
                 cv2.putText(frame_processed, label, (x_min, y_min - 8), cv2.FONT_HERSHEY_SIMPLEX, 0.45, box_color, 1, cv2.LINE_AA)
 
             # Giải phóng RAM & Bộ đệm Quỹ đạo: Xóa vết ID của các phương tiện đã ra khỏi khung hình
             traj_manager.cleanup(current_frame_ids)
             for cached_id in list(violation_counter.keys()):
-                if cached_id not in current_frame_ids:
+                if isinstance(cached_id, int) and cached_id not in current_frame_ids:
                     del violation_counter[cached_id]
 
         # In thông số hiệu năng FPS lên góc màn hình đồ họa
