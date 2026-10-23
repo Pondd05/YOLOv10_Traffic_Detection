@@ -220,6 +220,8 @@ def main():
         if os.path.exists(video_test_dir):
             test_videos = [os.path.join(video_test_dir, f) for f in os.listdir(video_test_dir)
                            if f.lower().endswith(('.mp4', '.mov', '.avi', '.mkv'))]
+            # Ưu tiên định dạng chuẩn .mp4 trước các file khác
+            test_videos.sort(key=lambda x: (not x.lower().endswith('.mp4'), x))
         if test_videos:
             VIDEO_PATH = test_videos[0]
             print(f"[SYSTEM] Tự động chọn video kiểm nghiệm: {os.path.basename(VIDEO_PATH)}")
