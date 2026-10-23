@@ -23,7 +23,25 @@ Hệ thống sử dụng mô hình **YOLOv10m** đã huấn luyện trên bộ d
 ---
 
 ## 3. QUY ƯỚC TÊN LÀN VÀ DANH SÁCH XE ĐƯỢC PHÉP (LANE CONVENTIONS)
-Dựa theo **Quy chuẩn kỹ thuật quốc gia về báo hiệu đường bộ (QCVN 41:2019/BGTVT)**:
+Dựa theo **Quy chuẩn kỹ thuật quốc gia về báo hiệu đường bộ (QCVN 41:2019/BGTVT)** và **chỉ đạo kỹ thuật của Giảng viên hướng dẫn**:
+
+### 3.1. Kịch bản phân làn thử nghiệm nghiêm ngặt (Strict Rule Engine)
+Nhằm tạo môi trường thực nghiệm với các tình huống vi phạm điển hình (thay vì quy tắc hỗn hợp ngoài đời thực vốn ít phát sinh lỗi sai làn), hệ thống thiết lập 2 kịch bản phân làn bắt buộc:
+
+#### A. Kịch bản hạ tầng 4 làn đường ($L_1 \rightarrow L_4$ từ trái sang phải):
+* **Làn $L_1$ (Bên trái ngoài cùng):** Dành riêng cho xe tải (`truck`). Mọi phương tiện khác di chuyển vào đều bị tính là **sai làn**.
+* **Làn $L_2$:** Dành riêng cho xe buýt (`bus`). Mọi phương tiện khác vào đều bị tính là **sai làn**.
+* **Làn $L_3$:** Dành riêng cho ô tô con (`car`). Mọi phương tiện khác vào đều bị tính là **sai làn**.
+* **Làn $L_4$ (Bên phải ngoài cùng):** Dành riêng cho xe máy/mô tô (`motorcycle`). Mọi phương tiện khác vào đều bị tính là **sai làn**.
+
+#### B. Kịch bản hạ tầng 3 làn đường ($L_1 \rightarrow L_3$ từ trái sang phải):
+* **Làn $L_1$ (Bên trái):** Dành cho xe trọng tải lớn & tốc độ cao gồm xe buýt (`bus`) và xe tải (`truck`).
+* **Làn $L_2$ (Ở giữa):** Dành riêng cho ô tô con (`car`).
+* **Làn $L_3$ (Bên phải):** Dành riêng cho xe máy/mô tô (`motorcycle`).
+
+---
+
+### 3.2. Bảng phân loại quy ước tổng quát
 
 | Tên hiển thị (Name) | Mã định danh (Code) | Loại xe được phép (`allowed_classes`) | Phím tắt Preset | Ý nghĩa / Hành vi kiểm tra |
 | :--- | :--- | :--- | :---: | :--- |

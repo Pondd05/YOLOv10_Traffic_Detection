@@ -13,6 +13,7 @@ import cv2
 import numpy as np
 import torch
 from ultralytics import YOLO
+from collections import defaultdict, deque
 
 # BƯỚC 2 & 3: HÀM TIỀN XỬ LÝ THÍCH ỨNG TỰ ĐỘNG (LÀM SẠCH DỮ LIỆU)
 def auto_adaptive_preprocessing(frame):
@@ -55,6 +56,64 @@ def auto_adaptive_preprocessing(frame):
         cleaned_frame = cv2.filter2D(cleaned_frame, -1, kernel)
         
     return cleaned_frame
+
+
+class VehicleTrajectoryManager:
+    """
+    Quản lý quỹ đạo chuyển động (Vehicle Trajectory) và độ ổn định (Stability):
+    - Lưu chuỗi lịch sử Bottom-Center (điểm chạm đất) của từng xe theo track_id.
+    - Áp dụng bộ lọc trượt Moving Average Filter để khử hiện tượng rung lắc (jitter) do Bounding Box co giãn.
+    - Lưu vết đồng thời trong không gian Camera và không gian BEV (Bird's-Eye View).
+    - Hỗ trợ cơ chế Temporal Voting để ổn định việc gán làn xe (Lane Assignment), tránh chớp nháy ở ranh giới.
+    """
+    def __init__(self, max_history=30, smoothing_window=5):
+        self.max_history = max_history
+        self.smoothing_window = smoothing_window
+        self.trajectories = defaultdict(lambda: deque(maxlen=self.max_history))
+        self.bev_trajectories = defaultdict(lambda: deque(maxlen=self.max_history))
+        self.lane_history = defaultdict(lambda: deque(maxlen=10))
+
+    def update(self, obj_id, point_cam, point_bev=None):
+        self.trajectories[obj_id].append(point_cam)
+        if point_bev is not None:
+            self.bev_trajectories[obj_id].append(point_bev)
+
+    def get_smoothed_trajectory(self, obj_id, use_bev=False):
+        raw_pts = self.bev_trajectories[obj_id] if use_bev else self.trajectories[obj_id]
+        if len(raw_pts) < 3:
+            return list(raw_pts)
+        
+        # Áp dụng giải thuật Moving Average trên chuỗi tọa độ theo thời gian
+        pts_array = np.array(raw_pts, dtype=np.float32)
+        smoothed = []
+        w = self.smoothing_window
+        for i in range(len(pts_array)):
+            start_idx = max(0, i - w + 1)
+            window_pts = pts_array[start_idx : i + 1]
+            avg_pt = np.mean(window_pts, axis=0)
+            smoothed.append((int(avg_pt[0]), int(avg_pt[1])))
+        return smoothed
+
+    def get_latest_smoothed_point(self, obj_id, use_bev=False):
+        smoothed = self.get_smoothed_trajectory(obj_id, use_bev)
+        return smoothed[-1] if smoothed else None
+
+    def assign_lane(self, obj_id, current_lane_name):
+        """ Majority voting trên cửa sổ 10 frame gần nhất để chống nhiễu đổi làn tức thời """
+        self.lane_history[obj_id].append(current_lane_name)
+        lanes = list(self.lane_history[obj_id])
+        return max(set(lanes), key=lanes.count)
+
+    def cleanup(self, active_ids):
+        """ Giải phóng bộ nhớ của các phương tiện đã rời khỏi tầm quan sát """
+        tracked_ids = list(self.trajectories.keys())
+        for tid in tracked_ids:
+            if tid not in active_ids:
+                del self.trajectories[tid]
+                if tid in self.bev_trajectories:
+                    del self.bev_trajectories[tid]
+                if tid in self.lane_history:
+                    del self.lane_history[tid]
 
 
 class BEVTransformer:
@@ -107,21 +166,36 @@ class BEVTransformer:
         p_bev = cv2.perspectiveTransform(p, self.M)
         return int(p_bev[0][0][0]), int(p_bev[0][0][1])
 
-    def draw_bev_map(self, vehicles_bev):
-        """ Draw a top-down radar map of the lanes and vehicles """
+    def draw_bev_map(self, vehicles_bev, traj_manager=None):
+        """ Draw a top-down radar map of the lanes, trajectories, and vehicles """
         bev_map = np.zeros((self.bev_h, self.bev_w, 3), dtype=np.uint8)
         
         # Draw Lanes in BEV
         for i, lane in enumerate(self.bev_lanes):
             poly = lane["polygon_px"]
-            color = (50, 50, 50) if i % 2 == 0 else (70, 70, 70)
+            color = (45, 45, 45) if i % 2 == 0 else (65, 65, 65)
             cv2.fillPoly(bev_map, [poly], color)
-            cv2.polylines(bev_map, [poly], True, (150, 150, 150), 1)
+            cv2.polylines(bev_map, [poly], True, (130, 130, 130), 1)
+            # Ghi nhãn tên làn ngắn gọn lên bản đồ BEV
+            cx, cy = poly.mean(axis=0).astype(int)
+            lane_code = lane.get("name", f"L{i+1}")
+            cv2.putText(bev_map, lane_code, (max(10, cx - 35), cy),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.4, (220, 220, 220), 1, cv2.LINE_AA)
             
+        # Draw Trajectories in BEV (Vệt quỹ đạo trên bản đồ chim nhìn)
+        if traj_manager is not None:
+            for (x, y, color, obj_id, label_text) in vehicles_bev:
+                smoothed_bev = traj_manager.get_smoothed_trajectory(obj_id, use_bev=True)
+                if len(smoothed_bev) >= 2:
+                    pts_arr = np.array(smoothed_bev, np.int32).reshape((-1, 1, 2))
+                    cv2.polylines(bev_map, [pts_arr], False, color, 2, cv2.LINE_AA)
+
         # Draw Vehicles in BEV
-        for (x, y, color) in vehicles_bev:
-            cv2.circle(bev_map, (x, y), 6, color, -1)
-            cv2.circle(bev_map, (x, y), 8, (255, 255, 255), 1)
+        for (x, y, color, obj_id, label_text) in vehicles_bev:
+            cv2.circle(bev_map, (x, y), 5, color, -1)
+            cv2.circle(bev_map, (x, y), 7, (255, 255, 255), 1)
+            cv2.putText(bev_map, f"#{obj_id}", (x + 9, y + 4),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.38, (255, 255, 255), 1, cv2.LINE_AA)
             
         return bev_map
 
@@ -206,16 +280,42 @@ def main():
             boundaries.append({**b, "points_px": pts})
         return cfg, lanes, boundaries
 
-    def check_vehicle_lane_violation(point_xy, class_name, lanes):
+    def check_vehicle_lane_violation(point_xy, class_name, lanes, strict_scenario=None):
         px, py = float(point_xy[0]), float(point_xy[1])
-        for lane in lanes:
+        num_lanes = len(lanes)
+        scenario = strict_scenario if strict_scenario is not None else (num_lanes if num_lanes in [3, 4] else None)
+        
+        for idx, lane in enumerate(lanes):
             if cv2.pointPolygonTest(lane["polygon_px"], (px, py), False) >= 0:
-                allowed = lane.get("allowed_classes", [])
-                if not allowed or class_name in allowed:
-                    return False, lane.get("name", "Lane"), "Hop le"
+                lane_name = lane.get("name", f"Lan {idx+1}")
+                
+                # Áp dụng bộ quy tắc phân làn nghiêm ngặt của Thầy (Kịch bản 3 làn / 4 làn)
+                if scenario == 4:
+                    # 4 làn: L1 (trái cùng)=truck, L2=bus, L3=car, L4 (phải cùng)=motorcycle
+                    strict_rules = {
+                        0: ["truck"],
+                        1: ["bus"],
+                        2: ["car"],
+                        3: ["motorcycle"]
+                    }
+                    allowed = strict_rules.get(idx, [])
+                elif scenario == 3:
+                    # 3 làn: L1 (trái)=truck, bus; L2 (giữa)=car; L3 (phải)=motorcycle
+                    strict_rules = {
+                        0: ["truck", "bus"],
+                        1: ["car"],
+                        2: ["motorcycle"]
+                    }
+                    allowed = strict_rules.get(idx, [])
                 else:
-                    return True, lane.get("name", "Lane"), f"Xe {class_name} sai lan"
-        return False, "Ngoai vung", "Khong xac dinh"
+                    allowed = lane.get("allowed_classes", [])
+
+                if not allowed or class_name in allowed:
+                    return False, lane_name, "Hop le", allowed
+                else:
+                    allowed_str = ", ".join(allowed) if allowed else "None"
+                    return True, lane_name, f"Xe {class_name} sai lan (Chi cho {allowed_str})", allowed
+        return False, "Ngoai vung", "Khong xac dinh", []
 
     # TỰ ĐỘNG NẠP CẤU HÌNH LÀN THỦ CÔNG TỪ lane_config.json NẾU CÓ
     config_file = os.path.join(current_folder, "lane_config.json")
@@ -240,6 +340,9 @@ def main():
         [int(width * 0.65), int(height * 0.55)],
         [int(width * 0.90), height]
     ], np.int32)
+
+    # Khởi tạo Bộ quản lý quỹ đạo phương tiện (Vehicle Trajectory Manager)
+    traj_manager = VehicleTrajectoryManager(max_history=35, smoothing_window=5)
 
     # Bộ đệm thời gian lưu vết khung hình vi phạm tĩnh để lọc nhiễu giật tọa độ
     violation_counter = {}
@@ -307,33 +410,34 @@ def main():
                 x_foot = int((x_min + x_max) / 2)
                 y_foot = int(y_max)
 
+                # Chuyển đổi tọa độ sang không gian BEV nếu có ma trận biến đổi
+                x_bev, y_bev = None, None
+                if bev_transformer and bev_transformer.M is not None:
+                    x_bev, y_bev = bev_transformer.transform_point((x_foot, y_foot))
+
+                # Cập nhật tọa độ vào Bộ quản lý quỹ đạo (VehicleTrajectoryManager)
+                traj_manager.update(obj_id, (x_foot, y_foot), (x_bev, y_bev) if x_bev is not None else None)
+
                 box_color = (0, 255, 0) # Mặc định màu XANH LÁ CÂY = Hợp lệ
                 status_text = "OK"
                 
-                # Transform to BEV space if available
-                if bev_transformer and bev_transformer.M is not None:
-                    x_bev, y_bev = bev_transformer.transform_point((x_foot, y_foot))
-                    check_pt = (x_bev, y_bev)
-                    check_lanes = bev_transformer.bev_lanes
-                    vehicles_bev.append((x_bev, y_bev, box_color))
-                else:
-                    check_pt = (x_foot, y_foot)
-                    check_lanes = lanes_data
+                check_pt = (x_bev, y_bev) if (bev_transformer and bev_transformer.M is not None) else (x_foot, y_foot)
+                check_lanes = bev_transformer.bev_lanes if (bev_transformer and bev_transformer.M is not None) else lanes_data
 
-                # KIỂM TRA SAI LÀN BẰNG BỘ QUY TẮC
+                # KIỂM TRA SAI LÀN VÀ GÁN LÀN ỔN ĐỊNH BẰNG TEMPORAL VOTING
                 if check_lanes:
-                    is_violation, lane_name, reason = check_vehicle_lane_violation(check_pt, class_name, check_lanes)
+                    is_violation, raw_lane_name, reason, allowed_cls = check_vehicle_lane_violation(check_pt, class_name, check_lanes)
+                    assigned_lane = traj_manager.assign_lane(obj_id, raw_lane_name)
+
                     if is_violation:
                         violation_counter[obj_id] = violation_counter.get(obj_id, 0) + 1
                         if violation_counter[obj_id] >= 10: # Lấn làn liên tục > 10 frames
                             box_color = (0, 0, 255) # ĐỔI SANG MÀU ĐỎ
-                            status_text = f"SAI LAN ({lane_name})"
-                            if bev_transformer and bev_transformer.M is not None:
-                                vehicles_bev[-1] = (x_bev, y_bev, box_color) # Update BEV color
+                            status_text = f"SAI LAN ({assigned_lane})"
                     else:
                         if obj_id in violation_counter:
                             violation_counter[obj_id] = max(0, violation_counter[obj_id] - 1)
-                        status_text = f"{lane_name}"
+                        status_text = f"{assigned_lane}"
                 else:
                     # Kiểm tra theo ROI đa giác cấm mặc định
                     is_inside = cv2.pointPolygonTest(forbidden_lane_roi, (x_foot, y_foot), False)
@@ -346,14 +450,25 @@ def main():
                         if obj_id in violation_counter:
                             violation_counter[obj_id] = max(0, violation_counter[obj_id] - 1)
 
+                if x_bev is not None:
+                    vehicles_bev.append((x_bev, y_bev, box_color, obj_id, status_text))
+
+                # BIỂU DIỄN VỆT QUỸ ĐẠO TRÊN ẢNH CAMERA (Perspective Trajectory Trail)
+                smoothed_cam = traj_manager.get_smoothed_trajectory(obj_id, use_bev=False)
+                if len(smoothed_cam) >= 2:
+                    pts_cam = np.array(smoothed_cam, np.int32).reshape((-1, 1, 2))
+                    traj_color = (0, 0, 255) if (box_color == (0, 0, 255)) else (0, 255, 255)
+                    cv2.polylines(frame_processed, [pts_cam], isClosed=False, color=traj_color, thickness=2, lineType=cv2.LINE_AA)
+
                 # Render các thành phần đồ họa trực quan lên màn hình Desktop
-                cv2.circle(frame_processed, (x_foot, y_foot), 5, (0, 0, 255), -1) # Chấm đỏ gầm xe
+                cv2.circle(frame_processed, (x_foot, y_foot), 5, (0, 0, 255), -1) # Chấm đỏ gầm xe (Bottom-Center)
                 cv2.rectangle(frame_processed, (x_min, y_min), (x_max, y_max), box_color, 2) # Khung bao xe
                 
                 label = f"{class_name} #{obj_id} [{status_text}]"
                 cv2.putText(frame_processed, label, (x_min, y_min - 8), cv2.FONT_HERSHEY_SIMPLEX, 0.45, box_color, 1, cv2.LINE_AA)
 
-            # Giải phóng RAM: Xóa vết ID của các phương tiện đã ra khỏi khung hình
+            # Giải phóng RAM & Bộ đệm Quỹ đạo: Xóa vết ID của các phương tiện đã ra khỏi khung hình
+            traj_manager.cleanup(current_frame_ids)
             for cached_id in list(violation_counter.keys()):
                 if cached_id not in current_frame_ids:
                     del violation_counter[cached_id]
@@ -366,7 +481,7 @@ def main():
         
         # Hỗ trợ hiển thị Không gian BEV Radar Map
         if bev_transformer and bev_transformer.M is not None:
-            bev_map = bev_transformer.draw_bev_map(vehicles_bev)
+            bev_map = bev_transformer.draw_bev_map(vehicles_bev, traj_manager)
             cv2.imshow("BEV Radar Map - Hybrid Space", bev_map)
 
         # Lắng nghe sự kiện bàn phím: Bấm phím 'q' để dừng tiến trình chủ động
