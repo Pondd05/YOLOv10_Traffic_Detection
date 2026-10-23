@@ -5,7 +5,7 @@
     1920,
     1080
   ],
-  "total_lanes": 3,
+  "total_lanes": 6,
   "total_boundaries": 0,
   "supported_classes": [
     "car",
@@ -16,18 +16,13 @@
   "lanes": [
     {
       "id": 1,
-      "name": "L1 - Xe tai & Xe buyt",
-      "code": "lane_truck_bus",
+      "name": "L1 (Trai) - Xe may",
+      "code": "lane_motorcycle_left",
       "direction": "down",
       "allowed_classes": [
-        "truck",
-        "bus"
+        "motorcycle"
       ],
       "polygon": [
-        [
-          0.03125,
-          0.94074
-        ],
         [
           0.27604,
           0.525
@@ -39,22 +34,22 @@
         [
           0.09479,
           0.99074
+        ],
+        [
+          0.03125,
+          0.94074
         ]
       ]
     },
     {
       "id": 2,
-      "name": "L2 - O to con",
-      "code": "lane_car",
+      "name": "L2 (Trai) - O to con",
+      "code": "lane_car_left",
       "direction": "down",
       "allowed_classes": [
         "car"
       ],
       "polygon": [
-        [
-          0.10521,
-          0.9713
-        ],
         [
           0.31406,
           0.52963
@@ -66,22 +61,23 @@
         [
           0.26719,
           1.05185
+        ],
+        [
+          0.10521,
+          0.9713
         ]
       ]
     },
     {
       "id": 3,
-      "name": "L3 - Xe may",
-      "code": "lane_motorcycle",
+      "name": "L3 (Trai) - Xe tai & Buyt",
+      "code": "lane_truck_bus_left",
       "direction": "down",
       "allowed_classes": [
-        "motorcycle"
+        "truck",
+        "bus"
       ],
       "polygon": [
-        [
-          0.26667,
-          1.04074
-        ],
         [
           0.39479,
           0.54259
@@ -93,6 +89,92 @@
         [
           0.48594,
           1.05926
+        ],
+        [
+          0.26667,
+          1.04074
+        ]
+      ]
+    },
+    {
+      "id": 4,
+      "name": "L4 (Phai) - Xe tai & Buyt",
+      "code": "lane_truck_bus_right",
+      "direction": "down",
+      "allowed_classes": [
+        "truck",
+        "bus"
+      ],
+      "polygon": [
+        [
+          0.50313,
+          0.54444
+        ],
+        [
+          0.59688,
+          0.54537
+        ],
+        [
+          0.74531,
+          1.04074
+        ],
+        [
+          0.53333,
+          1.05
+        ]
+      ]
+    },
+    {
+      "id": 5,
+      "name": "L5 (Phai) - O to con",
+      "code": "lane_car_right",
+      "direction": "down",
+      "allowed_classes": [
+        "car"
+      ],
+      "polygon": [
+        [
+          0.59167,
+          0.54259
+        ],
+        [
+          0.67969,
+          0.53704
+        ],
+        [
+          0.94063,
+          1.025
+        ],
+        [
+          0.74896,
+          1.04722
+        ]
+      ]
+    },
+    {
+      "id": 6,
+      "name": "L6 (Phai) - Xe may",
+      "code": "lane_motorcycle_right",
+      "direction": "down",
+      "allowed_classes": [
+        "motorcycle"
+      ],
+      "polygon": [
+        [
+          0.68229,
+          0.53889
+        ],
+        [
+          0.73542,
+          0.52685
+        ],
+        [
+          0.99896,
+          0.92593
+        ],
+        [
+          0.93542,
+          1.00278
         ]
       ]
     }

@@ -117,7 +117,7 @@ class VehicleTrajectoryManager:
 
 
 class BEVTransformer:
-    def __init__(self, lanes_data, frame_w, frame_h, bev_w=400, bev_h=600):
+    def __init__(self, lanes_data, frame_w, frame_h, bev_w=550, bev_h=600):
         self.bev_w = bev_w
         self.bev_h = bev_h
         
@@ -178,9 +178,9 @@ class BEVTransformer:
             cv2.polylines(bev_map, [poly], True, (130, 130, 130), 1)
             # Ghi nhãn tên làn ngắn gọn lên bản đồ BEV
             cx, cy = poly.mean(axis=0).astype(int)
-            lane_code = lane.get("name", f"L{i+1}")
-            cv2.putText(bev_map, lane_code, (max(10, cx - 35), cy),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.4, (220, 220, 220), 1, cv2.LINE_AA)
+            lane_code = lane.get("name", f"L{i+1}").split(" - ")[0]
+            cv2.putText(bev_map, lane_code, (max(5, cx - 25), cy),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.35, (220, 220, 220), 1, cv2.LINE_AA)
             
         # Draw Trajectories in BEV (Vệt quỹ đạo trên bản đồ chim nhìn)
         if traj_manager is not None:
