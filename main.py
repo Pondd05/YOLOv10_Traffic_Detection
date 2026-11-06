@@ -62,19 +62,32 @@ class VehicleTrajectoryManager:
     """
     Quản lý quỹ đạo chuyển động (Vehicle Trajectory) và độ ổn định (Stability):
     - Lưu chuỗi lịch sử Bottom-Center (điểm chạm đất) của từng xe theo track_id.
-    - Áp dụng bộ lọc trượt Moving Average Filter để khử hiện tượng rung lắc (jitter) do Bounding Box co giãn.
+    - Áp dụng bộ lọc Exponential Moving Average (EMA): P_t = alpha * P_raw + (1 - alpha) * P_{t-1} để triệt tiêu rung lắc (jitter).
     - Lưu vết đồng thời trong không gian Camera và không gian BEV (Bird's-Eye View).
     - Hỗ trợ cơ chế Temporal Voting để ổn định việc gán làn xe (Lane Assignment), tránh chớp nháy ở ranh giới.
     """
-    def __init__(self, max_history=30, smoothing_window=5):
+    def __init__(self, max_history=35, smoothing_window=5, ema_alpha=0.65):
         self.max_history = max_history
         self.smoothing_window = smoothing_window
+        self.ema_alpha = ema_alpha
         self.trajectories = defaultdict(lambda: deque(maxlen=self.max_history))
         self.bev_trajectories = defaultdict(lambda: deque(maxlen=self.max_history))
+        self.ema_points = {}
         self.lane_history = defaultdict(lambda: deque(maxlen=10))
 
     def update(self, obj_id, point_cam, point_bev=None):
-        self.trajectories[obj_id].append(point_cam)
+        # Tính toán Exponential Moving Average (EMA) để làm mượt tọa độ tức thời
+        if obj_id not in self.ema_points:
+            self.ema_points[obj_id] = point_cam
+        else:
+            prev_x, prev_y = self.ema_points[obj_id]
+            cur_x, cur_y = point_cam
+            ema_x = int(self.ema_alpha * cur_x + (1.0 - self.ema_alpha) * prev_x)
+            ema_y = int(self.ema_alpha * cur_y + (1.0 - self.ema_alpha) * prev_y)
+            self.ema_points[obj_id] = (ema_x, ema_y)
+
+        smoothed_pt = self.ema_points[obj_id]
+        self.trajectories[obj_id].append(smoothed_pt)
         if point_bev is not None:
             self.bev_trajectories[obj_id].append(point_bev)
 
@@ -112,8 +125,86 @@ class VehicleTrajectoryManager:
                 del self.trajectories[tid]
                 if tid in self.bev_trajectories:
                     del self.bev_trajectories[tid]
+                if tid in self.ema_points:
+                    del self.ema_points[tid]
                 if tid in self.lane_history:
                     del self.lane_history[tid]
+
+
+class TemporalHysteresisFilter:
+    """
+    Bộ lọc thời gian với Ngưỡng trễ 2 mức (Dual-threshold Hysteresis Filter) và Cửa sổ trượt (Sliding Window):
+    - Quản lý 3 trạng thái:
+        0: STATE_NORMAL    (Hợp lệ - Màu Xanh Lá)
+        1: STATE_WARNING   (Vùng cảnh báo chớm lấn vạch - Màu Vàng / Cam)
+        2: STATE_VIOLATION (Vùng vi phạm chính thức - Màu Đỏ Rực)
+    - Cửa sổ trượt (Sliding Window): Lưu lịch sử vi phạm qua W khung hình (mặc định 10 frames).
+    - Ngưỡng cảnh báo (warn_threshold = 2 frames): Phát hiện xe chớm chạm mép ranh giới.
+    - Ngưỡng vi phạm (violation_threshold = 5 frames): Xác thực vi phạm khi hành vi duy trì liên tục.
+    - Cơ chế Hysteresis Recovery (recovery_threshold = 5 frames an toàn liên tiếp):
+      Phương tiện phải rời khỏi vùng cấm đủ lâu mới được hạ trạng thái, triệt tiêu hiện tượng nhấp nháy (flicker).
+    """
+    STATE_NORMAL = 0
+    STATE_WARNING = 1
+    STATE_VIOLATION = 2
+
+    def __init__(self, window_size=10, warn_threshold=2, violation_threshold=5, recovery_threshold=5):
+        self.window_size = window_size
+        self.warn_threshold = warn_threshold
+        self.violation_threshold = violation_threshold
+        self.recovery_threshold = recovery_threshold
+        
+        self.windows = defaultdict(lambda: deque(maxlen=self.window_size))
+        self.states = defaultdict(lambda: self.STATE_NORMAL)
+        self.safe_counters = defaultdict(int)
+
+    def update(self, obj_id, is_violating_frame):
+        self.windows[obj_id].append(1 if is_violating_frame else 0)
+        viol_count = sum(self.windows[obj_id])
+        current_state = self.states[obj_id]
+
+        if current_state == self.STATE_NORMAL:
+            if viol_count >= self.violation_threshold:
+                new_state = self.STATE_VIOLATION
+                self.safe_counters[obj_id] = 0
+            elif viol_count >= self.warn_threshold:
+                new_state = self.STATE_WARNING
+                self.safe_counters[obj_id] = 0
+            else:
+                new_state = self.STATE_NORMAL
+        elif current_state == self.STATE_WARNING:
+            if viol_count >= self.violation_threshold:
+                new_state = self.STATE_VIOLATION
+                self.safe_counters[obj_id] = 0
+            elif viol_count < self.warn_threshold:
+                new_state = self.STATE_NORMAL
+            else:
+                new_state = self.STATE_WARNING
+        else: # STATE_VIOLATION
+            # Cơ chế Hysteresis Recovery: Cần duy trì an toàn liên tiếp mới hạ trạng thái
+            if not is_violating_frame:
+                self.safe_counters[obj_id] += 1
+                if self.safe_counters[obj_id] >= self.recovery_threshold:
+                    new_state = self.STATE_NORMAL
+                    self.safe_counters[obj_id] = 0
+                else:
+                    new_state = self.STATE_VIOLATION
+            else:
+                self.safe_counters[obj_id] = 0
+                new_state = self.STATE_VIOLATION
+
+        self.states[obj_id] = new_state
+        return new_state
+
+    def cleanup(self, active_ids):
+        tracked = list(self.states.keys())
+        for tid in tracked:
+            if tid not in active_ids:
+                del self.states[tid]
+                if tid in self.windows:
+                    del self.windows[tid]
+                if tid in self.safe_counters:
+                    del self.safe_counters[tid]
 
 
 class BEVTransformer:
@@ -343,8 +434,11 @@ def main():
         [int(width * 0.90), height]
     ], np.int32)
 
-    # Khởi tạo Bộ quản lý quỹ đạo phương tiện (Vehicle Trajectory Manager)
-    traj_manager = VehicleTrajectoryManager(max_history=35, smoothing_window=5)
+    # Khởi tạo Bộ quản lý quỹ đạo phương tiện với bộ lọc EMA
+    traj_manager = VehicleTrajectoryManager(max_history=35, smoothing_window=5, ema_alpha=0.65)
+
+    # Khởi tạo Bộ lọc thời gian với Ngưỡng trễ 2 mức (Hysteresis Sliding Window)
+    hysteresis_filter = TemporalHysteresisFilter(window_size=10, warn_threshold=2, violation_threshold=5, recovery_threshold=5)
 
     # Bộ đệm thời gian lưu vết khung hình vi phạm tĩnh để lọc nhiễu giật tọa độ
     violation_counter = {}
@@ -434,39 +528,38 @@ def main():
                 check_pt = (x_foot, y_foot)
                 check_lanes = lanes_data
 
-                # KIỂM TRA SAI LÀN VÀ GÁN LÀN NHẠY BÉN (PHẢN HỒI TỨC THÌ)
+                # KIỂM TRA SAI LÀN VÀ GÁN LÀN BẰNG BỘ LỌC HYSTERESIS THRESHOLDING & SLIDING WINDOW
                 if check_lanes:
                     is_violation, raw_lane_name, reason, allowed_cls = check_vehicle_lane_violation(check_pt, class_name, check_lanes)
                     assigned_lane = traj_manager.assign_lane(obj_id, raw_lane_name) if obj_id != -1 else raw_lane_name
                     display_lane = raw_lane_name if raw_lane_name != "Ngoai vung" else assigned_lane
 
-                    if is_violation:
-                        v_key = obj_id if obj_id != -1 else f"temp_{x_foot}_{y_foot}"
-                        violation_counter[v_key] = violation_counter.get(v_key, 0) + 1
-                        # Lấn làn từ 3 frame (~0.1s) trở lên lập tức báo ĐỎ RỰC; 1-2 frame báo CAM CẢNH BÁO
-                        if violation_counter[v_key] >= 3:
-                            box_color = (0, 0, 255) # ĐỎ RỰC
-                            status_text = f"SAI LAN ({display_lane})"
-                        else:
-                            box_color = (0, 165, 255) # MÀU CAM CẢNH BÁO
-                            status_text = f"CANH BAO ({display_lane})"
+                    v_key = obj_id if obj_id != -1 else f"temp_{x_foot}_{y_foot}"
+                    h_state = hysteresis_filter.update(v_key, is_violation)
+
+                    if h_state == TemporalHysteresisFilter.STATE_VIOLATION:
+                        box_color = (0, 0, 255) # ĐỎ RỰC - Vi phạm chính thức
+                        status_text = f"SAI LAN ({display_lane})"
+                    elif h_state == TemporalHysteresisFilter.STATE_WARNING:
+                        box_color = (0, 165, 255) # MÀU CAM - Vùng cảnh báo chớm chạm vạch
+                        status_text = f"CANH BAO ({display_lane})"
                     else:
-                        v_key = obj_id if obj_id != -1 else f"temp_{x_foot}_{y_foot}"
-                        if v_key in violation_counter:
-                            violation_counter[v_key] = max(0, violation_counter[v_key] - 2)
+                        box_color = (0, 255, 0) # XANH LÁ - Hợp lệ
                         status_text = f"{display_lane}"
                 else:
                     # Kiểm tra theo ROI đa giác cấm mặc định
                     is_inside = cv2.pointPolygonTest(forbidden_lane_roi, (x_foot, y_foot), False)
                     v_key = obj_id if obj_id != -1 else f"temp_{x_foot}_{y_foot}"
-                    if is_inside >= 0:
-                        violation_counter[v_key] = violation_counter.get(v_key, 0) + 1
-                        if violation_counter[v_key] >= 5:
-                            box_color = (0, 0, 255)
-                            status_text = "VIOLATION"
+                    h_state = hysteresis_filter.update(v_key, is_inside >= 0)
+                    if h_state == TemporalHysteresisFilter.STATE_VIOLATION:
+                        box_color = (0, 0, 255)
+                        status_text = "VIOLATION"
+                    elif h_state == TemporalHysteresisFilter.STATE_WARNING:
+                        box_color = (0, 165, 255)
+                        status_text = "WARNING"
                     else:
-                        if v_key in violation_counter:
-                            violation_counter[v_key] = max(0, violation_counter[v_key] - 1)
+                        box_color = (0, 255, 0)
+                        status_text = "OK"
 
                 if x_bev is not None:
                     vehicles_bev.append((x_bev, y_bev, box_color, obj_id, status_text))
@@ -489,12 +582,14 @@ def main():
 
             # Giải phóng RAM & Bộ đệm Quỹ đạo: Xóa vết ID của các phương tiện đã ra khỏi khung hình
             traj_manager.cleanup(current_frame_ids)
+            hysteresis_filter.cleanup(current_frame_ids)
             for cached_id in list(violation_counter.keys()):
                 if isinstance(cached_id, int) and cached_id not in current_frame_ids:
                     del violation_counter[cached_id]
 
-        # In thông số hiệu năng FPS lên góc màn hình đồ họa
-        cv2.putText(frame_processed, f"Pipeline Performance: {fps:.1f} FPS", (20, 40), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 255), 2, cv2.LINE_AA)
+        # In thông số hiệu năng FPS và chế độ lọc lên góc màn hình đồ họa
+        cv2.putText(frame_processed, f"Pipeline Performance: {fps:.1f} FPS", (20, 35), cv2.FONT_HERSHEY_SIMPLEX, 0.75, (0, 255, 255), 2, cv2.LINE_AA)
+        cv2.putText(frame_processed, f"Filter Mode: EMA (alpha=0.65) | Hysteresis Sliding Window", (20, 65), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 255, 100), 2, cv2.LINE_AA)
 
         # Đẩy ma trận ảnh đồ họa hoàn chỉnh hiển thị ra ngoài cửa sổ Desktop của hệ điều hành Windows
         cv2.imshow("UIT Traffic Enforcement System - Main.py High-Speed Pipeline", frame_processed)
