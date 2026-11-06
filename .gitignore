@@ -153,6 +153,9 @@ video test/*
 # Reports / Bao cao tien do
 BAO_CAO_*.md
 NOI_DUNG_BAO_CAO_*.md
+Bao_Cao_*.docx
+*.docx
+generate_report_docx.py
 
 
 # Neural Network weights -----------------------------------------------------------------------------------------------
