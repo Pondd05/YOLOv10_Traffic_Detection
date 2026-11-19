@@ -347,7 +347,7 @@ class LaneAnnotator:
         mode_str = "LA DA GIAC (LAN DUONG)" if self.mode == "lane" else "VACH KE (RANH GIOI)"
         cv2.putText(header, f"CHE DO: {mode_str} | So lan: {len(self.lanes)} | Vach ke: {len(self.boundaries)} | Frame: {self.current_frame_idx}/{self.total_frames}",
                     (15, 25), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 255, 255), 1, cv2.LINE_AA)
-        cv2.putText(header, f"Phim tat: [1]=Oto [2]=Xe may [3]=Hon hop | [n]=Tuy chon | [b]=Doi che do | [s]=Luu | [p]=Phat thu | [q]=Thoat",
+        cv2.putText(header, f"Phim tat: [1]=Oto [2]=Xe may [3]=Hon hop | [n]=Tuy chon | [u]=Undo | [d]=Xoa 1 lan | [s]=Luu | [p]=Phat thu | [q]=Thoat",
                     (15, 50), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (220, 220, 220), 1, cv2.LINE_AA)
 
         # Ghép header lên frame
@@ -662,6 +662,26 @@ def main():
             if target_list:
                 removed = target_list.pop()
                 annotator.status_msg = f"Da xoa: {removed.get('name', 'Hinh cuoi')}"
+        elif key == ord('d'):
+            if annotator.lanes:
+                print("\n" + "=" * 50)
+                print("DANH SÁCH CÁC LÀN ĐƯỜNG HIỆN TẠI:")
+                for idx, l in enumerate(annotator.lanes):
+                    print(f"  [{idx + 1}] {l.get('name')} (Loại xe: {', '.join(l.get('allowed_classes', []))})")
+                print("=" * 50)
+                del_choice = input("👉 Nhập số thứ tự làn bạn muốn xóa (1, 2, 3...) hoặc Enter để hủy: ").strip()
+                try:
+                    c = int(del_choice) - 1
+                    if 0 <= c < len(annotator.lanes):
+                        removed = annotator.lanes.pop(c)
+                        for new_id, l in enumerate(annotator.lanes, 1):
+                            l["id"] = new_id
+                        annotator.status_msg = f"Da xoa thanh cong: [{removed.get('name')}]. Cac lan con lai giu nguyen!"
+                        print(f"\n[DELETE] Đã xóa thành công: [{removed.get('name')}]. Các làn khác được giữ nguyên 100%.")
+                    else:
+                        print("[DELETE] Số thứ tự không hợp lệ.")
+                except Exception:
+                    print("[DELETE] Đã hủy thao tác xóa.")
         elif key == ord('c'):
             annotator.lanes = []
             annotator.boundaries = []

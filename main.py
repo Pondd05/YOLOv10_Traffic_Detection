@@ -307,10 +307,13 @@ class EvidenceRecorder:
             "Cloud_Status": "SYNCED_LOCAL"
         }
 
-        # Ghi CSV
-        with open(self.csv_log_path, "a", newline="", encoding="utf-8") as f:
-            csv_writer = csv.writer(f)
-            csv_writer.writerow(list(record.values()))
+        # Ghi CSV (bọc try-except chống crash khi đang mở file trong Excel)
+        try:
+            with open(self.csv_log_path, "a", newline="", encoding="utf-8") as f:
+                csv_writer = csv.writer(f)
+                csv_writer.writerow(list(record.values()))
+        except PermissionError:
+            print(f"[CẢNH BÁO] File {os.path.basename(self.csv_log_path)} đang mở trong Excel/ứng dụng khác nên bị khóa tạm thời. Vui lòng đóng Excel để tiếp tục ghi log!")
 
         # Ghi JSON
         logs = []
