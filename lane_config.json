@@ -1,11 +1,11 @@
 {
   "version": 1,
-  "source_video": "traffic_vietnam_standard.mp4",
+  "source_video": "cho_nong_san_thu_duc.avi",
   "reference_resolution": [
     1920,
     1080
   ],
-  "total_lanes": 6,
+  "total_lanes": 3,
   "total_boundaries": 0,
   "supported_classes": [
     "car",
@@ -16,165 +16,83 @@
   "lanes": [
     {
       "id": 1,
-      "name": "L1 (Trai) - Xe may",
-      "code": "lane_motorcycle_left",
+      "name": "Lane 1 - Buyt & Tai",
+      "code": "lane_bus_truck",
       "direction": "down",
       "allowed_classes": [
-        "motorcycle"
+        "bus",
+        "truck"
       ],
       "polygon": [
         [
-          0.26,
-          0.48
+          0.4127,
+          0.4022
         ],
         [
-          0.315,
-          0.48
+          0.4639,
+          0.4022
         ],
         [
-          0.1,
+          0.4639,
           1.0
         ],
         [
-          0.02,
-          0.96
+          0.2257,
+          1.0
         ]
       ]
     },
     {
       "id": 2,
-      "name": "L2 (Trai) - O to con",
-      "code": "lane_car_left",
+      "name": "Lane 2 - O to",
+      "code": "lane_car",
       "direction": "down",
       "allowed_classes": [
         "car"
       ],
       "polygon": [
         [
-          0.315,
-          0.48
+          0.4639,
+          0.4022
         ],
         [
-          0.395,
-          0.48
+          0.5371,
+          0.4022
         ],
         [
-          0.267,
-          1.05
+          0.7356,
+          1.0
         ],
         [
-          0.1,
+          0.4639,
           1.0
         ]
       ]
     },
     {
       "id": 3,
-      "name": "L3 (Trai) - Xe tai & Buyt",
-      "code": "lane_truck_bus_left",
-      "direction": "down",
-      "allowed_classes": [
-        "truck",
-        "bus"
-      ],
-      "polygon": [
-        [
-          0.395,
-          0.48
-        ],
-        [
-          0.486,
-          0.48
-        ],
-        [
-          0.486,
-          1.06
-        ],
-        [
-          0.267,
-          1.05
-        ]
-      ]
-    },
-    {
-      "id": 4,
-      "name": "L4 (Phai) - Xe tai & Buyt",
-      "code": "lane_truck_bus_right",
-      "direction": "down",
-      "allowed_classes": [
-        "truck",
-        "bus"
-      ],
-      "polygon": [
-        [
-          0.503,
-          0.48
-        ],
-        [
-          0.597,
-          0.48
-        ],
-        [
-          0.748,
-          1.05
-        ],
-        [
-          0.533,
-          1.06
-        ]
-      ]
-    },
-    {
-      "id": 5,
-      "name": "L5 (Phai) - O to con",
-      "code": "lane_car_right",
-      "direction": "down",
-      "allowed_classes": [
-        "car"
-      ],
-      "polygon": [
-        [
-          0.597,
-          0.48
-        ],
-        [
-          0.68,
-          0.48
-        ],
-        [
-          0.94,
-          1.03
-        ],
-        [
-          0.748,
-          1.05
-        ]
-      ]
-    },
-    {
-      "id": 6,
-      "name": "L6 (Phai) - Xe may",
-      "code": "lane_motorcycle_right",
+      "name": "Lane 3 - Xe may",
+      "code": "lane_motorcycle",
       "direction": "down",
       "allowed_classes": [
         "motorcycle"
       ],
       "polygon": [
         [
-          0.68,
-          0.48
+          0.5371,
+          0.4022
         ],
         [
-          0.74,
-          0.48
+          0.6008,
+          0.4022
         ],
         [
-          1.0,
-          0.95
+          0.9979,
+          1.0
         ],
         [
-          0.94,
-          1.03
+          0.7356,
+          1.0
         ]
       ]
     }

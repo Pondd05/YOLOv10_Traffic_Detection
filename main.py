@@ -14,6 +14,9 @@ import numpy as np
 import torch
 from ultralytics import YOLO
 from collections import defaultdict, deque
+import datetime
+import csv
+import json
 
 # BƯỚC 2 & 3: HÀM TIỀN XỬ LÝ THÍCH ỨNG TỰ ĐỘNG (LÀM SẠCH DỮ LIỆU)
 def auto_adaptive_preprocessing(frame):
@@ -207,6 +210,131 @@ class TemporalHysteresisFilter:
                     del self.safe_counters[tid]
 
 
+class EvidenceRecorder:
+    """
+    Module ghi nhận bằng chứng vi phạm giao thông tự động (Evidence Recorder):
+    - Quản lý bộ đệm xoay vòng (Circular Buffer) lưu trước 3-5 giây (pre-buffer).
+    - Tự động trích xuất Snapshot (ảnh nét cao kèm Bounding Box & nhãn vi phạm).
+    - Tự động cắt và ghi video bằng chứng (Evidence Video Clip) gồm 3 giây trước và 3 giây sau vi phạm.
+    - Ghi log siêu dữ liệu (Metadata Logger) ra định dạng JSON và CSV.
+    - Sẵn sàng tích hợp Cloud Sync (Google Drive / Google Sheets / Cloud Storage).
+    - Cơ chế chống ghi trùng lặp (Single-Incident Deduplication) theo track_id.
+    """
+    def __init__(self, base_dir, fps=30, pre_seconds=3, post_seconds=3):
+        self.base_dir = base_dir
+        self.fps = max(1, int(fps)) if (0 < fps < 100) else 30
+        self.pre_frames = self.fps * pre_seconds
+        self.post_frames = self.fps * post_seconds
+        
+        self.snapshots_dir = os.path.join(base_dir, "evidence", "snapshots")
+        self.videos_dir = os.path.join(base_dir, "evidence", "videos")
+        os.makedirs(self.snapshots_dir, exist_ok=True)
+        os.makedirs(self.videos_dir, exist_ok=True)
+
+        self.csv_log_path = os.path.join(base_dir, "evidence", "violation_log.csv")
+        self.json_log_path = os.path.join(base_dir, "evidence", "violation_log.json")
+        self._init_logs()
+
+        self.frame_buffer = deque(maxlen=self.pre_frames)
+        self.active_recordings = {}
+        self.recorded_ids = set()
+
+    def _init_logs(self):
+        if not os.path.exists(self.csv_log_path):
+            with open(self.csv_log_path, "w", newline="", encoding="utf-8") as f:
+                writer = csv.writer(f)
+                writer.writerow(["Incident_ID", "Track_ID", "Vehicle_Class", "Timestamp", "Frame_Index", "Violation_Type", "Lane_Name", "Snapshot_File", "Video_File", "Cloud_Status"])
+
+    def push_frame(self, frame):
+        """ Đẩy frame vào bộ đệm xoay vòng và tiếp tục ghi cho các phiên đang active """
+        self.frame_buffer.append(frame.copy())
+        
+        finished_incidents = []
+        for inc_id, rec in self.active_recordings.items():
+            rec['writer'].write(frame)
+            rec['remaining_frames'] -= 1
+            if rec['remaining_frames'] <= 0:
+                rec['writer'].release()
+                finished_incidents.append(inc_id)
+
+        for inc_id in finished_incidents:
+            del self.active_recordings[inc_id]
+
+    def trigger_violation(self, obj_id, class_name, lane_name, reason, current_frame, frame_idx):
+        """ Kích hoạt quy trình lập hồ sơ bằng chứng vi phạm """
+        if obj_id in self.recorded_ids or obj_id == -1:
+            return None # Đã ghi nhận hoặc xe chưa có ID hợp lệ
+
+        self.recorded_ids.add(obj_id)
+        now_str = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+        inc_id = f"VIO_{now_str}_ID{obj_id}"
+
+        # 1. Lưu Snapshot ảnh chất lượng cao
+        snapshot_filename = f"{inc_id}.jpg"
+        snapshot_path = os.path.join(self.snapshots_dir, snapshot_filename)
+        cv2.imwrite(snapshot_path, current_frame)
+
+        # 2. Khởi tạo ghi Video Clip bằng chứng (3s trước + 3s sau)
+        video_filename = f"{inc_id}.mp4"
+        video_path = os.path.join(self.videos_dir, video_filename)
+        h, w = current_frame.shape[:2]
+        fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+        writer = cv2.VideoWriter(video_path, fourcc, self.fps, (w, h))
+
+        # Ghi toàn bộ các frame có sẵn trong pre-buffer (3 giây trước)
+        for buffered_frame in list(self.frame_buffer):
+            writer.write(buffered_frame)
+
+        # Đăng ký phiên ghi tiếp tục cho post_frames (3 giây sau)
+        self.active_recordings[inc_id] = {
+            'writer': writer,
+            'remaining_frames': self.post_frames,
+            'video_path': video_path
+        }
+
+        # 3. Ghi log Metadata ra CSV và JSON
+        timestamp_full = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        record = {
+            "Incident_ID": inc_id,
+            "Track_ID": int(obj_id),
+            "Vehicle_Class": class_name,
+            "Timestamp": timestamp_full,
+            "Frame_Index": int(frame_idx),
+            "Violation_Type": reason,
+            "Lane_Name": lane_name,
+            "Snapshot_File": snapshot_filename,
+            "Video_File": video_filename,
+            "Cloud_Status": "SYNCED_LOCAL"
+        }
+
+        # Ghi CSV
+        with open(self.csv_log_path, "a", newline="", encoding="utf-8") as f:
+            csv_writer = csv.writer(f)
+            csv_writer.writerow(list(record.values()))
+
+        # Ghi JSON
+        logs = []
+        if os.path.exists(self.json_log_path):
+            try:
+                with open(self.json_log_path, "r", encoding="utf-8") as f:
+                    logs = json.load(f)
+            except: logs = []
+        logs.append(record)
+        with open(self.json_log_path, "w", encoding="utf-8") as f:
+            json.dump(logs, f, indent=2, ensure_ascii=False)
+
+        print(f"[EVIDENCE] Đã lập hồ sơ vi phạm: {inc_id} | Xe {class_name} #{obj_id} vi phạm tại {lane_name}")
+        return inc_id
+
+    def close(self):
+        """ Giải phóng toàn bộ các video writer còn đang mở """
+        for inc_id, rec in self.active_recordings.items():
+            try:
+                rec['writer'].release()
+            except: pass
+        self.active_recordings.clear()
+
+
 class BEVTransformer:
     def __init__(self, lanes_data, frame_w, frame_h, bev_w=550, bev_h=600):
         self.bev_w = bev_w
@@ -311,8 +439,8 @@ def main():
         if os.path.exists(video_test_dir):
             test_videos = [os.path.join(video_test_dir, f) for f in os.listdir(video_test_dir)
                            if f.lower().endswith(('.mp4', '.mov', '.avi', '.mkv'))]
-            # Ưu tiên định dạng chuẩn .mp4 trước các file khác
-            test_videos.sort(key=lambda x: (not x.lower().endswith('.mp4'), x))
+            # Ưu tiên video Chợ Nông Sản Thủ Đức để đồng bộ với bạn
+            test_videos.sort(key=lambda x: (not ('cho_nong_san' in x.lower() or 'thu_duc' in x.lower()), not x.lower().endswith('.mp4'), x))
         if test_videos:
             VIDEO_PATH = test_videos[0]
             print(f"[SYSTEM] Tự động chọn video kiểm nghiệm: {os.path.basename(VIDEO_PATH)}")
@@ -440,6 +568,11 @@ def main():
     # Khởi tạo Bộ lọc thời gian với Ngưỡng trễ 2 mức (Hysteresis Sliding Window)
     hysteresis_filter = TemporalHysteresisFilter(window_size=10, warn_threshold=2, violation_threshold=5, recovery_threshold=5)
 
+    # Khởi tạo Bộ ghi nhận bằng chứng vi phạm tự động (Evidence Recorder)
+    fps_in = cap.get(cv2.CAP_PROP_FPS)
+    recorder = EvidenceRecorder(current_folder, fps=fps_in if (0 < fps_in < 100) else 30, pre_seconds=3, post_seconds=3)
+    frame_idx = 0
+
     # Bộ đệm thời gian lưu vết khung hình vi phạm tĩnh để lọc nhiễu giật tọa độ
     violation_counter = {}
 
@@ -452,6 +585,7 @@ def main():
         if not success:
             print("[SYSTEM] Đã xử lý hết luồng video thực nghiệm.")
             break
+        frame_idx += 1
 
         # BƯỚC 2: Thực hiện chuỗi giải thuật LÀM SẠCH DỮ LIỆU thích ứng chủ động
         frame_processed = auto_adaptive_preprocessing(raw_frame)
@@ -540,6 +674,8 @@ def main():
                     if h_state == TemporalHysteresisFilter.STATE_VIOLATION:
                         box_color = (0, 0, 255) # ĐỎ RỰC - Vi phạm chính thức
                         status_text = f"SAI LAN ({display_lane})"
+                        # TỰ ĐỘNG GHI NHẬN HỒ SƠ BẰNG CHỨNG (EVIDENCE RECORDER)
+                        recorder.trigger_violation(obj_id, class_name, display_lane, reason, frame_processed, frame_idx)
                     elif h_state == TemporalHysteresisFilter.STATE_WARNING:
                         box_color = (0, 165, 255) # MÀU CAM - Vùng cảnh báo chớm chạm vạch
                         status_text = f"CANH BAO ({display_lane})"
@@ -587,9 +723,13 @@ def main():
                 if isinstance(cached_id, int) and cached_id not in current_frame_ids:
                     del violation_counter[cached_id]
 
-        # In thông số hiệu năng FPS và chế độ lọc lên góc màn hình đồ họa
+        # Cập nhật buffer xoay vòng và ghi hình video bằng chứng
+        recorder.push_frame(frame_processed)
+
+        # In thông số hiệu năng FPS, chế độ lọc và trạng thái Evidence Recorder lên HUD
         cv2.putText(frame_processed, f"Pipeline Performance: {fps:.1f} FPS", (20, 35), cv2.FONT_HERSHEY_SIMPLEX, 0.75, (0, 255, 255), 2, cv2.LINE_AA)
         cv2.putText(frame_processed, f"Filter Mode: EMA (alpha=0.65) | Hysteresis Sliding Window", (20, 65), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 255, 100), 2, cv2.LINE_AA)
+        cv2.putText(frame_processed, f"Evidence Recorded: {len(recorder.recorded_ids)} incidents", (20, 95), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (255, 180, 0), 2, cv2.LINE_AA)
 
         # Đẩy ma trận ảnh đồ họa hoàn chỉnh hiển thị ra ngoài cửa sổ Desktop của hệ điều hành Windows
         cv2.imshow("UIT Traffic Enforcement System - Main.py High-Speed Pipeline", frame_processed)
@@ -604,7 +744,8 @@ def main():
             print("[SYSTEM] Luồng xử lý được ngắt chủ động từ bàn phím.")
             break
 
-    # Giải phóng hoàn toàn bộ giải mã video và đóng tài nguyên phần cứng đồ họa
+    # Đóng bộ ghi bằng chứng và giải phóng tài nguyên
+    recorder.close()
     cap.release()
     cv2.destroyAllWindows()
     print("[SYSTEM] Đã giải phóng hoàn toàn GPU và kết thúc chương trình mượt mà.")
